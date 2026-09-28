@@ -82,3 +82,5 @@ input[type=checkbox]{width:auto}
 .cd.wd{color:var(--mu);min-height:0;text-align:center}
 .cd b{display:block;font-size:13px}
 @media(max-width:800px){#hcols{grid-template-columns:1fr}}
+
+.below{padding:0 12px 16px}
