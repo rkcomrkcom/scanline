@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>สแกนเหรียญฟิวเจอร์</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>สแกนเหรียญ</h1>
+  <div id="tfs"></div>
+  <button id="rescan">สแกนใหม่</button>
+  <div id="acct"></div>
+</header>
+<details id="cfg"><summary>ตั้งค่าเงื่อนไข</summary><div id="cfgBody"></div></details>
+<main>
+  <div id="status"></div>
+  <div id="sbox"><input id="q" placeholder="ค้นหาเหรียญ เช่น SOL หรือ SOLUSDT" autocomplete="off"><button id="qb">ค้นหา</button></div>
+  <div id="qres"></div>
+  <div id="list"></div>
+  <details id="auto"><summary>ออโต้เทรดจำลอง</summary><div id="autoBox"></div></details>
+  <div id="hcols">
+    <section>
+      <h2>ออเดอร์ที่เปิดอยู่</h2>
+      <div class="tw"><table class="tb" id="openTb"><thead><tr><th>เหรียญ</th><th>ทิศ</th><th>เข้า</th><th>ตอนนี้</th><th>TP</th><th>SL</th><th>กำไร/ขาดทุน</th><th></th></tr></thead><tbody></tbody></table></div>
+    </section>
+    <section>
+      <h2>ออเดอร์ที่ปิด</h2>
+      <div id="hf"></div>
+      <div id="hsum"></div>
+      <div class="tw"><table class="tb" id="histTb"></table></div>
+    </section>
+  </div>
+  <div id="capbox"><label>ทุนเริ่มต้น (USDT)<input id="cap" type="number" step="any" min="1"></label><button id="reset">รีเซ็ตพอร์ต</button><span id="capMsg"></span></div>
+  <h2>ปฏิทินกำไรขาดทุน</h2>
+  <div id="cal"></div>
+  <div id="dayList"></div>
+</main>
+<div id="coin" hidden>
+  <div class="bar"><button id="back">กลับหน้าสแกน</button><b id="cname"></b><span id="cpx"></span></div>
+  <div class="wrap">
+    <div id="charts"></div>
+    <aside>
+      <label>ทิศทาง<select id="ty"><option value="LONG">Long</option><option value="SHORT">Short</option></select></label>
+      <label>มาร์จิ้น (USDT)<input id="mg" type="number" value="100"></label>
+      <label>Leverage<input id="lv" type="number" value="10"></label>
+      <fieldset><legend>TP (ราคา / % / จุด)</legend><div class="sr">
+        <input id="tp-price" type="number" step="any" placeholder="ราคา">
+        <input id="tp-pct" type="number" step="any" placeholder="%">
+        <input id="tp-pts" type="number" step="any" placeholder="จุด">
+      </div></fieldset>
+      <fieldset><legend>SL (ราคา / % / จุด)</legend><div class="sr">
+        <input id="sl-price" type="number" step="any" placeholder="ราคา">
+        <input id="sl-pct" type="number" step="any" placeholder="%">
+        <input id="sl-pts" type="number" step="any" placeholder="จุด">
+      </div></fieldset>
+      <div id="calcRes"></div>
+      <div id="rate"></div>
+      <button id="go" class="LONG">เข้าออเดอร์ Long</button>
+      <div id="msg"></div>
+      <div class="posbox"></div>
+    </aside>
+  </div>
+</div>
+<script src="https://s3.tradingview.com/tv.js"></script>
+<script src="scanner.js"></script>
+<script src="trade.js"></script>
+<script src="hist.js"></script>
+<script src="auto.js"></script>
+</body>
+</html>
