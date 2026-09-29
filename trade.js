@@ -1,4 +1,5 @@
 const S = JSON.parse(localStorage.paper || '{"bal":10000,"pos":[],"hist":[]}');
+S.cap = S.cap || 10000; // ทุนเริ่มต้น (พอร์ตเก่าที่ไม่มีค่านี้ถือว่า 10,000)
 const save = () => localStorage.paper = JSON.stringify(S);
 const CH = ['1', '5', '60', '240'];
 const FEE = 0.0005;
@@ -41,8 +42,8 @@ function close(id, why, at) {
   const pnl = (o.side === 'LONG' ? p - o.entry : o.entry - p) * o.qty;
   const back = why === 'Liquidated' ? 0 : Math.max(0, o.m + pnl - o.qty * p * FEE);
   S.bal += back;
-  S.hist.unshift({ sym: o.sym, side: o.side, pnl: back - o.m - (o.fee || 0), why, entry: o.entry, exit: p });
-  S.hist = S.hist.slice(0, 50);
+  S.hist.unshift({ sym: o.sym, side: o.side, pnl: back - o.m - (o.fee || 0), why, entry: o.entry, exit: p, t: Date.now(), ot: Math.floor(o.id), lv: o.lv, auto: !!o.auto });
+  S.hist = S.hist.slice(0, 2000);
   if (typeof autoClosed === 'function') autoClosed(o, S.hist[0]);
   S.pos.splice(i, 1); save();
 }
@@ -66,15 +67,17 @@ function draw() {
   let up = 0;
   const rows = S.pos.map(o => {
     const p = px[o.sym] || o.entry, pnl = (o.side === 'LONG' ? p - o.entry : o.entry - p) * o.qty; up += pnl;
-    return `<div class="prow"><b>${o.sym.replace('USDT', '')}</b> <i class="${pnl >= 0 ? 'up' : 'dn'}">${pnl.toFixed(2)} USDT (${(pnl / o.m * 100).toFixed(1)}%)</i><br>
+    return `<div class="prow"><b>${o.sym.replace('USDT', '')}</b> <span class="tag ${o.side}">${o.side === 'LONG' ? 'Long' : 'Short'} x${o.lv}</span><br>
       เข้า ${o.entry} | ตอนนี้ ${p} | Liq ${+o.liq.toPrecision(6)}${o.tp ? ' | TP ' + o.tp : ''}${o.sl ? ' | SL ' + o.sl : ''}<br>
-      <span class="tag ${o.side}">${o.side === 'LONG' ? 'Long' : 'Short'} x${o.lv}</span> <button data-c="${o.id}">ปิดออเดอร์</button></div>`;
+      <i class="${pnl >= 0 ? 'up' : 'dn'}">${pnl.toFixed(2)} USDT (${(pnl / o.m * 100).toFixed(1)}%)</i> <button data-c="${o.id}">ปิดออเดอร์</button></div>`;
   }).join('') || '<div class="prow">ยังไม่มีออเดอร์ที่เปิดอยู่</div>';
-  const hist = S.hist.slice(0, 5).map(h => `<div class="prow"><b>${h.sym.replace('USDT', '')}</b> <i class="${h.pnl >= 0 ? 'up' : 'dn'}">${h.pnl.toFixed(2)}</i> | ${WHY[h.why] || 'ปิดเอง'}${h.exit ? ' ' + +h.exit.toPrecision(6) : ''}${h.entry ? ' | เข้า ' + +h.entry.toPrecision(6) : ''} ${h.side === 'LONG' ? 'Long' : 'Short'}</div>`).join('');
+  const hist = S.hist.slice(0, 5).map(h => `<div class="prow">${h.sym.replace('USDT', '')} ${h.side === 'LONG' ? 'Long' : 'Short'} | ${WHY[h.why] || 'ปิดเอง'}${h.exit ? ' ' + +h.exit.toPrecision(6) : ''}${h.entry ? ' | เข้า ' + +h.entry.toPrecision(6) : ''}: <i class="${h.pnl >= 0 ? 'up' : 'dn'}">${h.pnl.toFixed(2)}</i></div>`).join('');
   const eq = S.bal + S.pos.reduce((s, o) => s + o.m, 0) + up;
   $('#acct').textContent = `พอร์ตจำลอง ${eq.toFixed(2)} USDT (ว่าง ${S.bal.toFixed(2)})`;
   document.querySelectorAll('.posbox').forEach(e => e.innerHTML = rows + (hist ? '<div class="prow"><b>ปิดล่าสุด</b></div>' + hist : ''));
   if (cur && px[cur]) $('#cpx').textContent = px[cur];
+  $('#reset').textContent = 'รีเซ็ตพอร์ต ' + S.cap.toLocaleString('en-US') + ' USDT';
+  if (typeof histDraw === 'function') histDraw();
 }
 
 document.addEventListener('click', e => {
@@ -82,7 +85,15 @@ document.addEventListener('click', e => {
 });
 $('#go').onclick = () => place($('#ty').value);
 $('#back').onclick = () => { $('#coin').hidden = true; cur = null; $('#charts').innerHTML = ''; };
-$('#reset').onclick = () => { if (confirm('รีเซ็ตพอร์ตและลบออเดอร์ทั้งหมด?')) { S.bal = 10000; S.pos = []; S.hist = []; save(); draw(); } };
+$('#reset').onclick = () => { if (confirm('รีเซ็ตพอร์ตและลบออเดอร์ทั้งหมด?')) { S.bal = S.cap; S.pos = []; S.hist = []; save(); draw(); } };
+const capMsg = t => $('#capMsg').textContent = t;
+$('#cap').value = S.cap;
+$('#cap').onchange = () => { // ปรับทุนทันที: เงินว่างเพิ่ม/ลดตามส่วนต่าง ออเดอร์และประวัติไม่ถูกล้าง
+  const v = +$('#cap').value, d = v - S.cap;
+  if (!(v > 0)) { $('#cap').value = S.cap; return capMsg('ทุนต้องมากกว่า 0'); }
+  if (S.bal + d < 0) { $('#cap').value = S.cap; return capMsg('เงินว่างไม่พอสำหรับลดทุนขนาดนี้ (ว่าง ' + S.bal.toFixed(2) + ' USDT)'); }
+  S.bal += d; S.cap = v; save(); capMsg(d ? 'ปรับเงินในพอร์ต ' + (d > 0 ? '+' : '') + d.toFixed(2) + ' USDT แล้ว' : ''); draw();
+};
 setInterval(tick, 3000); tick(); draw();
 
 /* ---------- Calculator ---------- */

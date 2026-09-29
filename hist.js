@@ -11,14 +11,14 @@ const inRange = h => {
   if (!h.t) return !hv.from && !hv.to; // ออเดอร์เก่าที่ไม่มีวันที่ ขึ้นเฉพาะตอนเลือก "ทั้งหมด"
   const k = dk(h.t); return (!hv.from || k >= hv.from) && (!hv.to || k <= hv.to);
 };
-const HH = '<thead><tr><th>เวลาปิด</th><th>เหรียญ</th><th>ทิศ</th><th>ปิดที่</th><th>เข้า</th><th>กำไร/ขาดทุน</th></tr></thead>';
-const hrow = h => `<tr><td>${tfmt(h.t)}</td><td><b>${short(h.sym)}</b>${h.auto ? ' <i class="mu">ออโต้</i>' : ''}</td><td><span class="tag ${h.side}">${h.side === 'LONG' ? 'Long' : 'Short'}${h.lv ? ' x' + h.lv : ''}</span></td><td>${WHY[h.why] || 'ปิดเอง'}${h.exit ? ' ' + +h.exit.toPrecision(6) : ''}</td><td>${h.entry ? +h.entry.toPrecision(6) : '-'}</td><td class="${h.pnl >= 0 ? 'up' : 'dn'}">${money(h.pnl)}</td></tr>`;
+const HH = '<thead><tr><th>เวลาปิด</th><th>เหรียญ</th><th>กำไร/ขาดทุน</th><th>ปิดที่</th><th>เข้า</th><th>ทิศ</th></tr></thead>';
+const hrow = h => `<tr><td>${tfmt(h.t)}</td><td><b>${short(h.sym)}</b>${h.auto ? ' <i class="mu">ออโต้</i>' : ''}</td><td class="${h.pnl >= 0 ? 'up' : 'dn'}">${money(h.pnl)}</td><td>${WHY[h.why] || 'ปิดเอง'}${h.exit ? ' ' + +h.exit.toPrecision(6) : ''}</td><td>${h.entry ? +h.entry.toPrecision(6) : '-'}</td><td><span class="tag ${h.side}">${h.side === 'LONG' ? 'Long' : 'Short'}${h.lv ? ' x' + h.lv : ''}</span></td></tr>`;
 
 function drawOpen() {
   const tb = $('#openTb tbody'); if (!tb) return;
   tb.innerHTML = S.pos.map(o => {
     const p = px[o.sym] || o.entry, L = o.side === 'LONG', pnl = (L ? p - o.entry : o.entry - p) * o.qty;
-    return `<tr><td><b>${short(o.sym)}</b>${o.auto ? ' <i class="mu">ออโต้</i>' : ''}<br><small class="mu">${tfmt(Math.floor(o.id))}</small></td><td><span class="tag ${o.side}">${L ? 'Long' : 'Short'} x${o.lv}</span></td><td>${+o.entry.toPrecision(6)}</td><td>${p}</td><td>${o.tp ? +o.tp.toPrecision(6) : '-'}</td><td>${o.sl ? +o.sl.toPrecision(6) : '-'}</td><td class="${pnl >= 0 ? 'up' : 'dn'}">${money(pnl)}<br><small>${(pnl / o.m * 100).toFixed(1)}%</small></td><td><button data-c="${o.id}">ปิด</button></td></tr>`;
+    return `<tr><td><b>${short(o.sym)}</b>${o.auto ? ' <i class="mu">ออโต้</i>' : ''}<br><small class="mu">${tfmt(Math.floor(o.id))}</small></td><td class="${pnl >= 0 ? 'up' : 'dn'}">${money(pnl)}<br><small>${(pnl / o.m * 100).toFixed(1)}%</small></td><td>${+o.entry.toPrecision(6)}</td><td>${p}</td><td>${o.tp ? +o.tp.toPrecision(6) : '-'}</td><td>${o.sl ? +o.sl.toPrecision(6) : '-'}</td><td><span class="tag ${o.side}">${L ? 'Long' : 'Short'} x${o.lv}</span></td><td><button data-c="${o.id}">ปิด</button></td></tr>`;
   }).join('') || '<tr><td colspan="8">ยังไม่มีออเดอร์ที่เปิดอยู่</td></tr>';
 }
 
