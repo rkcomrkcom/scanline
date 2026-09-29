@@ -4,7 +4,7 @@ const save = () => localStorage.paper = JSON.stringify(S);
 const CH = ['1', '5', '60', '240'];
 const FEE = 0.0005;
 const WHY = { TP: 'TP', SL: 'โดน SL', Liquidated: 'โดน Liq', Delisted: 'เหรียญถูกถอน' };
-let cur = null, px = {};
+let cur = null, px = {}, mk = {}; // px = Last Price (ใช้เช็ก TP), mk = Mark Price (ใช้เช็ก SL/Liq ตามที่ Binance ใช้จริง)
 let thb = 0, lock = false;
 const $v = id => parseFloat($('#' + id).value);
 const msg = t => $('#msg').textContent = t;
@@ -50,13 +50,14 @@ function close(id, why, at) {
 
 async function tick() {
   try {
-    const n = {}; (await j('/fapi/v1/ticker/price')).forEach(x => n[x.symbol] = +x.price);
+    const [lp, pi] = await Promise.all([j('/fapi/v1/ticker/price'), j('/fapi/v1/premiumIndex')]);
+    const n = {}, m = {}; lp.forEach(x => n[x.symbol] = +x.price); pi.forEach(x => m[x.symbol] = +x.markPrice);
     if (Object.keys(n).length > 100) S.pos.slice().forEach(o => { if (!(o.sym in n) && px[o.sym]) close(o.id, 'Delisted', px[o.sym]); });
-    px = n;
+    px = n; mk = m;
     S.pos.slice().forEach(o => {
-      const p = px[o.sym], L = o.side === 'LONG'; if (!p) return;
-      if (L ? p <= o.liq : p >= o.liq) close(o.id, 'Liquidated', o.liq);
-      else if (o.sl && (L ? p <= o.sl : p >= o.sl)) close(o.id, 'SL', o.sl);
+      const p = px[o.sym], mp = mk[o.sym] || p, L = o.side === 'LONG'; if (!p) return; // mp = Mark Price (fallback เป็น Last ถ้าดึงไม่ได้)
+      if (L ? mp <= o.liq : mp >= o.liq) close(o.id, 'Liquidated', o.liq);
+      else if (o.sl && (L ? mp <= o.sl : mp >= o.sl)) close(o.id, 'SL', o.sl);
       else if (o.tp && (L ? p >= o.tp : p <= o.tp)) close(o.id, 'TP', o.tp);
     });
     draw(); calcTick();

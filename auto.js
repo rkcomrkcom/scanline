@@ -1,5 +1,5 @@
 /* ออโต้เทรดจำลอง: สแกน (ป้ายย่อ/สวนเทรนด์) -> รอสัญญาณกดไกบน 5m -> เปิดออเดอร์จำลองพร้อม SL/TP */
-const DEF = { mode: 'fixed', margin: 100, lev: 10, maxSl: 1, slUnit: 'R', trail: 0.5, risk: 1, rr: 2, maxOpen: 3, dayLoss: 3, minScore: 3, cool: 60, beR: 1 };
+const DEF = { mode: 'fixed', margin: 100, lev: 10, maxSl: 1, trail: 0.5, trailUnit: 'R', risk: 1, rr: 2, maxOpen: 3, dayLoss: 3, minScore: 3, cool: 60, beR: 1, beUnit: 'R' };
 const A = Object.assign({ stats: [], cool: {}, day: { k: '', eq: 0, pnl: 0 } }, JSON.parse(localStorage.auto || '{}'));
 A.c = Object.assign({}, DEF, A.c); A.on = false; // เริ่มปิดทุกครั้งที่เปิดหน้า
 const persist = () => localStorage.auto = JSON.stringify(A);
@@ -55,7 +55,7 @@ function aOpen(x, t) {
   if (L ? liq >= sl : liq <= sl) return skip('ราคา Liq อยู่ก่อน SL');
   if (m < 5 || m + fee > S.bal) return skip('เงินว่างไม่พอ');
   S.bal -= m + fee;
-  S.pos.push({ id: Date.now() + Math.random(), sym: x.sym, side: x.dir, entry: en, qty: notional / en, m, lv, tp, sl, liq, fee, auto: true, tag: x.tag, d, riskUsd: notional * d / en, be: false });
+  S.pos.push({ id: Date.now() + Math.random(), sym: x.sym, side: x.dir, entry: en, qty: notional / en, m, lv, tp, sl, liq, fee, auto: true, tag: x.tag, d, riskUsd: notional * d / en, be: false, beR: A.c.beR, beUnit: A.c.beUnit, trail: A.c.trail, trailUnit: A.c.trailUnit });
   save(); draw();
   aLog(`เข้า ${x.dir} ${x.sym} [${x.tag === 'PB' ? 'ย่อในเทรนด์' : 'สวนเทรนด์'}] @${en} SL ${+sl.toPrecision(6)} TP ${+tp.toPrecision(6)} x${lv} มาร์จิ้น ${m.toFixed(0)} เสี่ยง ${(notional * d / en).toFixed(2)} USDT`);
 }
@@ -83,24 +83,23 @@ async function aLoop() {
   finally { chk = p; busy = false; aDraw(); }
 }
 
-function aTick() { // เมื่อกำไรถึง beR ย้าย SL มาเท่าทุน แล้วตามหลังราคาที่ดีที่สุดที่ระยะ trail (R) จนกว่าจะถึง TP หรือโดน SL
+function aTick() { // เช็กด้วย Mark Price (ตรงกับที่ Binance ใช้เช็ก SL จริง) เมื่อกำไรถึงเกณฑ์แรก ล็อก SL ไว้ที่ราคา ณ จุดนั้นเลย (ไม่ใช่แค่เท่าทุน) จากนั้นค่อยขยับต่อเฉพาะตอนคำนวณด้วยระยะตามหลังแล้วดีกว่า SL ปัจจุบัน
+  const dist = (o, unit, v) => unit === 'pct' ? o.entry * v / 100 : v * o.d; // แปลงค่าที่ตั้ง (R หรือ %) เป็นระยะราคาจริงของไม้นั้น
   S.pos.forEach(o => {
-    const p = px[o.sym]; if (!o.auto || !p) return;
+    const p = mk[o.sym] || px[o.sym]; if (!o.auto || !p) return; // mk = Mark Price, ถ้าดึงไม่ได้ fallback เป็น Last
     const L = o.side === 'LONG';
-    const pct = A.c.slUnit === 'pct';
-    const step = pct ? o.entry / 100 : o.d;                        // 1 หน่วยของ "เริ่มขยับ/ตามหลัง" = 1% ราคาเข้า หรือ 1R ของไม้นี้
-    const prof = (L ? p - o.entry : o.entry - p) / step;
+    const beU = o.beUnit || 'R', beV = o.beR ?? A.c.beR, trU = o.trailUnit || 'R', trV = o.trail ?? A.c.trail; // ค่าที่ล็อกไว้ตอนเปิดไม้ (ไม้เก่าที่ไม่มีค่านี้ ใช้ค่าปัจจุบันแทน)
     if (!o.be) {
-      if (prof < A.c.beR) return;
-      o.be = true; o.best = p; o.sl = o.entry * (L ? 1.001 : 0.999);
-      save(); draw(); aLog(`ขยับ SL ${o.sym} มาเท่าทุน`);
+      const beD = dist(o, beU, beV);
+      if ((L ? p - o.entry : o.entry - p) < beD) return;
+      o.be = true; o.best = p;
+      o.sl = o.entry + (L ? beD : -beD); // ล็อก SL ไว้ที่ราคา ณ จุดถึงเกณฑ์แรกเลย ไม่ใช่แค่เท่าทุน
+      save(); draw(); aLog(`ล็อก SL ${o.sym} ที่ ${+o.sl.toPrecision(6)} (ถึงเกณฑ์แรก)`);
     }
-    if (!(A.c.trail > 0)) return;
+    if (!(trV > 0)) return;
     o.best = L ? Math.max(o.best ?? p, p) : Math.min(o.best ?? p, p);
-    const bestProf = (L ? o.best - o.entry : o.entry - o.best) / step;
-    if (bestProf < A.c.beR + A.c.trail) return;                     // ยังไม่ถึงจุดเริ่มตามหลัง (เท่าทุน+ระยะตามหลัง) ให้ค้าง SL ที่เท่าทุนไว้ก่อน
-    const ns = o.best + (L ? -1 : 1) * A.c.trail * step;
-    if (L ? ns > o.sl : ns < o.sl) { o.sl = ns; save(); draw(); }   // SL ขยับได้ทางเดียว ไม่ถอยกลับ
+    const ns = o.best + (L ? -1 : 1) * dist(o, trU, trV);
+    if (L ? ns > o.sl : ns < o.sl) { o.sl = ns; save(); draw(); }  // ขยับต่อเฉพาะตอนคำนวณได้ดีกว่าที่ล็อกไว้ SL ขยับได้ทางเดียว ไม่ถอยกลับ
   });
 }
 
@@ -126,15 +125,22 @@ function aDraw() {
 }
 
 const AF = [['margin', 'มาร์จิ้นต่อไม้ (USDT) [โหมดคงที่]'], ['lev', 'Leverage (x) [โหมดคงที่]'], ['maxSl', 'SL กว้างสุด (% ของราคา) เกินนี้ไม่เข้า'], ['risk', 'เสี่ยงต่อไม้ (% พอร์ต) [โหมดความเสี่ยง]'], ['rr', 'R:R เป้าหมาย'], ['maxOpen', 'ออเดอร์พร้อมกันสูงสุด'], ['dayLoss', 'หยุดทั้งวันเมื่อขาดทุน (% พอร์ต)'],
-  ['minScore', 'คะแนนต่ำสุดที่ยอมเข้า'], ['cool', 'พักเหรียญหลังโดน SL (นาที)'], ['beR', 'เริ่มขยับ SL (เท่าทุน) เมื่อกำไรถึง'], ['trail', 'ระยะ SL ตามหลังราคาสูงสุด ใส่ 0 = ไม่ตาม']];
+  ['minScore', 'คะแนนต่ำสุดที่ยอมเข้า'], ['cool', 'พักเหรียญหลังโดน SL (นาที)']];
+const UF = [['beR', 'beUnit', 'เริ่มขยับ SL (เท่าทุน) เมื่อกำไรถึง'], ['trail', 'trailUnit', 'ระยะ SL ตามหลังราคาสูงสุด (0 = ไม่ตาม)']];
+const uOpt = u => `<select data-u="${u[1]}"><option value="R"${A.c[u[1]] !== 'pct' ? ' selected' : ''}>เท่าของ SL (R)</option><option value="pct"${A.c[u[1]] === 'pct' ? ' selected' : ''}>% ของราคาเข้า</option></select>`;
 $('#autoBox').innerHTML = `<label><input type="checkbox" id="aOn"> เปิดออโต้เทรดจำลอง (ต้องเปิดหน้านี้ทิ้งไว้ และใช้ TF ที่เลือกอยู่ในการสแกน)</label>
-  <div class="sr4"><label>โหมดไซซ์ต่อไม้<select data-a="mode"><option value="fixed">มาร์จิ้นคงที่ (USDT + Leverage)</option><option value="risk">คิดจากความเสี่ยง %</option></select></label>
-    <label>หน่วยของ "เริ่มขยับ/ตามหลัง"<select data-a="slUnit"><option value="R">R (เทียบ SL ของไม้นี้)</option><option value="pct">% ของราคาเข้า</option></select></label>${AF.map(([k, t]) => `<label>${t}<input type="number" step="any" data-a="${k}" value="${A.c[k]}"></label>`).join('')}</div>
+  <div class="sr4"><label>โหมดไซซ์ต่อไม้<select data-a="mode"><option value="fixed">มาร์จิ้นคงที่ (USDT + Leverage)</option><option value="risk">คิดจากความเสี่ยง %</option></select></label>${AF.map(([k, t]) => `<label>${t}<input type="number" step="any" data-a="${k}" value="${A.c[k]}"></label>`).join('')}
+  ${UF.map(([k, u, t]) => `<label>${t}<div class="sr2"><input type="number" step="any" data-a="${k}" value="${A.c[k]}">${uOpt(u)}</div></label>`).join('')}</div>
   <div id="aSt"></div><div id="aChk"></div>
   <table id="aTb"><thead><tr><th>ป้าย</th><th>ชนะ/ทั้งหมด</th><th>เฉลี่ย R</th><th>PnL สุทธิ</th></tr></thead><tbody></tbody></table>
   <div id="aLog"></div><button id="aRst">ล้างสถิติออโต้</button>`;
-document.querySelectorAll('#autoBox select').forEach(s => s.value = A.c[s.dataset.a]);
+$('#autoBox select').value = A.c.mode;
 $('#aOn').onchange = e => { A.on = e.target.checked; aLog(A.on ? 'เปิดออโต้เทรดจำลอง' : 'ปิดออโต้เทรดจำลอง'); if (A.on) aLoop(); };
-$('#autoBox').addEventListener('change', e => { const k = e.target.dataset.a; if (k === 'mode' || k === 'slUnit') { A.c[k] = e.target.value; persist(); } else if (k && (+e.target.value > 0 || (k === 'trail' && e.target.value !== ''))) { A.c[k] = +e.target.value; persist(); aDraw(); } });
+$('#autoBox').addEventListener('change', e => {
+  const k = e.target.dataset.a, u = e.target.dataset.u;
+  if (k === 'mode') { A.c.mode = e.target.value; persist(); }
+  else if (u) { A.c[u] = e.target.value; persist(); }
+  else if (k && (+e.target.value > 0 || (k === 'trail' && e.target.value !== ''))) { A.c[k] = +e.target.value; persist(); aDraw(); }
+});
 $('#aRst').onclick = () => { if (confirm('ล้างสถิติออโต้ทั้งหมด?')) { A.stats = []; A.cool = {}; persist(); aDraw(); } };
 setInterval(aLoop, 30000); setInterval(aTick, 5000); aDraw();
