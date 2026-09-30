@@ -135,10 +135,11 @@ function aDraw() {
   const nAuto = S.pos.filter(o => o.auto).length;
   $('#aSt').textContent = `${A.on ? 'กำลังทำงาน' : 'ปิดอยู่'} | โหมด ${A.c.raw ? 'ทดสอบไม่กรอง' : 'กรอง'} สัญญาณ ${A.c.trigTf === '1m' ? '1m' : '5m'} | เฝ้าดู ${watch.length} เหรียญ | ออเดอร์ที่เปิด ${S.pos.length}/${A.c.maxOpen} (ออโต้ ${nAuto}) | วันนี้ ${A.day.pnl.toFixed(2)} USDT${A.on && aBlocked() ? ' | หยุดทั้งวัน: ขาดทุนถึงเพดานแล้ว' : ''}`;
   const g = f => { const a = A.stats.filter(f), n = a.length;
-    return { n, w: a.filter(s => s.pnl > 0).length, wr: n ? a.filter(s => s.pnl > 0).length / n * 100 : 0, r: n ? a.reduce((s, x) => s + x.R, 0) / n : 0, pnl: a.reduce((s, x) => s + x.pnl, 0) }; };
+    const W = a.filter(s => s.pnl > 0), Ls = a.filter(s => s.pnl <= 0), sum = b => b.reduce((s, x) => s + x.pnl, 0);
+    return { n, w: W.length, wr: n ? W.length / n * 100 : 0, r: n ? a.reduce((s, x) => s + x.R, 0) / n : 0, pnl: sum(a), aw: W.length ? sum(W) / W.length : 0, al: Ls.length ? sum(Ls) / Ls.length : 0, avg: n ? sum(a) / n : 0 }; };
   $('#aChk').textContent = chk ? `ตรวจ 5m ล่าสุด ${new Date(chk.t).toLocaleTimeString('th-TH')} | เฝ้า ${chk.w} เหรียญ | แท่งใหม่ที่ตรวจ ${chk.fresh} | เจอสัญญาณ ${chk.sig} | ${chk.msg}` : 'ยังไม่ได้ตรวจ (รอรอบแรกภายใน 30 วินาที หลังติ๊กเปิดออโต้)';
-  $('#aTb tbody').innerHTML = [['ทะลุกรอบ', s => s.tag === 'BO'], ['ย่อในเทรนด์', s => s.tag === 'PB'], ['สวนเทรนด์', s => s.tag === 'CT'], ['คะแนน 2', s => s.s === 2], ['คะแนน 3', s => s.s === 3], ['คะแนน 4+', s => s.s >= 4], ['สัญญาณ 1m', s => s.tf === '1m'], ['สัญญาณ 5m', s => (s.tf || '5m') === '5m'], ['ไม่กรอง (ทดสอบ)', s => !!s.raw], ['กรองปกติ', s => !s.raw], ['รวม', () => true]].map(([t, f]) => { const s = g(f);
-    return `<tr><td>${t}</td><td>${s.w}/${s.n} ${s.wr.toFixed(0)}%</td><td>${s.r.toFixed(2)}</td><td class="${s.pnl >= 0 ? 'up' : 'dn'}">${s.pnl.toFixed(2)}</td></tr>`; }).join('');
+  $('#aTb tbody').innerHTML = [['ทะลุกรอบ', s => s.tag === 'BO'], ['ย่อในเทรนด์', s => s.tag === 'PB'], ['สวนเทรนด์', s => s.tag === 'CT'], ['คะแนน 2', s => s.s === 2], ['คะแนน 3', s => s.s === 3], ['คะแนน 4+', s => s.s >= 4], ['สัญญาณ 1m', s => s.tf === '1m'], ['สัญญาณ 5m', s => (s.tf || '5m') === '5m'], ['ไม่กรอง (ทดสอบ)', s => !!s.raw], ['กรองปกติ', s => !s.raw], ['ปิดที่ TP', s => s.why === 'TP'], ['SL หลังล็อกกำไร', s => s.why === 'SL' && !!s.be], ['SL ก่อนล็อก', s => s.why === 'SL' && !s.be], ['ปิดอื่นๆ (Liq/ปิดเอง/ถอน)', s => s.why !== 'TP' && s.why !== 'SL'], ['รวม', () => true]].map(([t, f]) => { const s = g(f);
+    return `<tr><td>${t}</td><td>${s.w}/${s.n} ${s.wr.toFixed(0)}%</td><td>${s.r.toFixed(2)}</td><td class="${s.pnl >= 0 ? 'up' : 'dn'}">${s.pnl.toFixed(2)}</td><td class="${s.avg >= 0 ? 'up' : 'dn'}">${s.avg.toFixed(2)}</td><td class="up">${s.aw.toFixed(2)}</td><td class="dn">${s.al.toFixed(2)}</td></tr>`; }).join('');
   $('#aLog').innerHTML = logs.map(l => `<div>${l}</div>`).join('') || 'ยังไม่มีเหตุการณ์ (ควรมีไม้อย่างน้อย 30 ไม้ก่อนเชื่อสถิติ)';
 }
 
@@ -151,7 +152,7 @@ $('#autoBox').innerHTML = `<label><input type="checkbox" id="aOn"> เปิด�
   <div class="sr4"><label>โหมดไซซ์ต่อไม้<select data-a="mode"><option value="fixed">มาร์จิ้นคงที่ (USDT + Leverage)</option><option value="risk">คิดจากความเสี่ยง %</option></select></label><label>ไทม์เฟรมสัญญาณเข้า<select data-a="trigTf"><option value="5m">5m</option><option value="1m">1m (SL/ATR ยังคิดจาก 5m)</option></select></label>${AF.map(([k, t]) => `<label>${t}<input type="number" step="any" data-a="${k}" value="${A.c[k]}"></label>`).join('')}
   ${UF.map(([k, u, t]) => `<label>${t}<div class="sr2"><input type="number" step="any" data-a="${k}" value="${A.c[k]}">${uOpt(u)}</div></label>`).join('')}</div>
   <div id="aSt"></div><div id="aChk"></div>
-  <table id="aTb"><thead><tr><th>ป้าย</th><th>ชนะ/ทั้งหมด</th><th>เฉลี่ย R</th><th>PnL สุทธิ</th></tr></thead><tbody></tbody></table>
+  <table id="aTb"><thead><tr><th>ป้าย</th><th>ชนะ/ทั้งหมด</th><th>เฉลี่ย R</th><th>PnL สุทธิ</th><th>เฉลี่ย/ไม้</th><th>ไม้ชนะเฉลี่ย</th><th>ไม้แพ้เฉลี่ย</th></tr></thead><tbody></tbody></table>
   <div id="aLog"></div><button id="aRst">ล้างสถิติออโต้</button>`;
 $('#autoBox [data-a=mode]').value = A.c.mode; $('#autoBox [data-a=trigTf]').value = A.c.trigTf; $('#aRaw').checked = !!A.c.raw;
 $('#aRaw').onchange = e => { A.c.raw = e.target.checked; persist(); aLog(A.c.raw ? 'เปิดโหมดทดสอบไม่กรอง' : 'ปิดโหมดทดสอบไม่กรอง'); aWatch(); };
