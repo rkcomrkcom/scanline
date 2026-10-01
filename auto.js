@@ -53,10 +53,10 @@ function aOpen(x, t) {
     notional = Math.min(riskUsd / (d / en), S.bal * 0.25 * lv);
   }
   if (fx) {                                                                                            // โหมดคงที่: TP ตามกำไรสุทธิเป้าหมาย, SL ต้องขาดทุนสุทธิไม่เกินเพดาน
-    const qty = notional / en, fees = 2 * notional * FEE, loss = d * qty + fees, dt = (A.c.netTp + fees) / qty;
+    const qty = notional / en, fees = 2 * notional * FEE, loss = d * qty + fees, dt = A.c.netTp > 0 ? (A.c.netTp + fees) / qty : 0;
     if (loss > A.c.maxLoss) return skip(`ขาดทุนที่ SL ~${loss.toFixed(2)} USDT เกินเพดาน ${A.c.maxLoss} (ลองลดมาร์จิ้นหรือ Leverage)`);
-    tp = en + (L ? dt : -dt);
-    if (isFinite(lvl) && (L ? lvl > en : lvl < en) && Math.abs(lvl - en) < dt * 1.1) return skip('แนวรับ/ต้านอยู่ก่อนถึงเป้ากำไร');
+    tp = dt ? en + (L ? dt : -dt) : 0;                                                                // 0 = ไม่ตั้ง TP
+    if (dt && isFinite(lvl) && (L ? lvl > en : lvl < en) && Math.abs(lvl - en) < dt * 1.1) return skip('แนวรับ/ต้านอยู่ก่อนถึงเป้ากำไร');
   } else {
     if (isFinite(lvl) && (L ? lvl > en : lvl < en)) {
       const dr = Math.abs(lvl - en) / d;
@@ -72,7 +72,7 @@ function aOpen(x, t) {
   S.bal -= m + fee;
   S.pos.push({ id: Date.now() + Math.random(), sym: x.sym, side: x.dir, entry: en, qty: notional / en, m, lv, tp, sl, liq, fee, auto: true, tag: x.tag, score: x.s, tf: A.c.trigTf === '1m' ? '1m' : '5m', raw: !!A.c.raw, d, riskUsd: notional * d / en, be: false, beR: A.c.beR, beUnit: A.c.beUnit, trail: A.c.trail, trailUnit: A.c.trailUnit });
   save(); draw();
-  aLog(`เข้า ${x.dir} ${x.sym} [${x.tag === 'PB' ? 'ย่อในเทรนด์' : x.tag === 'CT' ? 'สวนเทรนด์' : 'ทะลุกรอบ'}${A.c.raw ? ' ไม่กรอง' : ''} คะแนน ${x.s} ${A.c.trigTf === '1m' ? '1m' : '5m'}] @${en} SL ${+sl.toPrecision(6)} TP ${+tp.toPrecision(6)} x${lv} มาร์จิ้น ${m.toFixed(0)} เสี่ยง ${(notional * d / en).toFixed(2)} USDT`);
+  aLog(`เข้า ${x.dir} ${x.sym} [${x.tag === 'PB' ? 'ย่อในเทรนด์' : x.tag === 'CT' ? 'สวนเทรนด์' : 'ทะลุกรอบ'}${A.c.raw ? ' ไม่กรอง' : ''} คะแนน ${x.s} ${A.c.trigTf === '1m' ? '1m' : '5m'}] @${en} SL ${+sl.toPrecision(6)} TP ${tp ? +tp.toPrecision(6) : 'ไม่ตั้ง'} x${lv} มาร์จิ้น ${m.toFixed(0)} เสี่ยง ${(notional * d / en).toFixed(2)} USDT`);
 }
 
 async function aLoop() {
@@ -143,7 +143,7 @@ function aDraw() {
   $('#aLog').innerHTML = logs.map(l => `<div>${l}</div>`).join('') || 'ยังไม่มีเหตุการณ์ (ควรมีไม้อย่างน้อย 30 ไม้ก่อนเชื่อสถิติ)';
 }
 
-const AF = [['margin', 'มาร์จิ้นต่อไม้ (USDT) [โหมดคงที่]'], ['lev', 'Leverage (x) [โหมดคงที่]'], ['netTp', 'กำไรสุทธิเป้าหมายต่อไม้ (USDT) [โหมดคงที่]'], ['maxLoss', 'ขาดทุนสุทธิสูงสุดต่อไม้ (USDT) เกินนี้ไม่เข้า [โหมดคงที่]'], ['maxSl', 'SL กว้างสุด (% ของราคา) เกินนี้ไม่เข้า'], ['risk', 'เสี่ยงต่อไม้ (% พอร์ต) [โหมดความเสี่ยง]'], ['rr', 'R:R เป้าหมาย'], ['maxOpen', 'ออเดอร์พร้อมกันสูงสุด'], ['dayLoss', 'หยุดทั้งวันเมื่อขาดทุน (% พอร์ต)'],
+const AF = [['margin', 'มาร์จิ้นต่อไม้ (USDT) [โหมดคงที่]'], ['lev', 'Leverage (x) [โหมดคงที่]'], ['netTp', 'กำไรสุทธิเป้าหมายต่อไม้ (USDT) [โหมดคงที่] (0 = ไม่ตั้ง TP ให้ SL ตามหลังปิดเอง)'], ['maxLoss', 'ขาดทุนสุทธิสูงสุดต่อไม้ (USDT) เกินนี้ไม่เข้า [โหมดคงที่]'], ['maxSl', 'SL กว้างสุด (% ของราคา) เกินนี้ไม่เข้า'], ['risk', 'เสี่ยงต่อไม้ (% พอร์ต) [โหมดความเสี่ยง]'], ['rr', 'R:R เป้าหมาย'], ['maxOpen', 'ออเดอร์พร้อมกันสูงสุด'], ['dayLoss', 'หยุดทั้งวันเมื่อขาดทุน (% พอร์ต)'],
   ['maxRun', 'แท่งสัญญาณ 5m ยาวสุด (เท่าของ ATR) เกินนี้ไม่เข้า'], ['btcMove', 'ข้ามเมื่อ BTC 1h เหวี่ยงสวนทางเกิน (%) (ใส่ 99 = ปิด)'], ['minScore', 'คะแนนต่ำสุดที่ยอมเข้า'], ['cool', 'พักเหรียญหลังโดน SL (นาที)']];
 const UF = [['beR', 'beUnit', 'เริ่มขยับ SL (เท่าทุน) เมื่อกำไรถึง'], ['trail', 'trailUnit', 'ระยะ SL ตามหลังราคาสูงสุด (0 = ไม่ตาม)']];
 const uOpt = u => `<select data-u="${u[1]}"><option value="R"${A.c[u[1]] !== 'pct' ? ' selected' : ''}>เท่าของ SL (R)</option><option value="pct"${A.c[u[1]] === 'pct' ? ' selected' : ''}>% ของราคาเข้า</option></select>`;
@@ -161,7 +161,7 @@ $('#autoBox').addEventListener('change', e => {
   const k = e.target.dataset.a, u = e.target.dataset.u;
   if (k === 'mode' || k === 'trigTf') { A.c[k] = e.target.value; persist(); aDraw(); }
   else if (u) { A.c[u] = e.target.value; persist(); }
-  else if (k && (+e.target.value > 0 || (k === 'trail' && e.target.value !== ''))) { A.c[k] = +e.target.value; persist(); aWatch(); }
+  else if (k && (+e.target.value > 0 || (k === 'trail' && e.target.value !== '') || (k === 'netTp' && e.target.value !== '' && +e.target.value >= 0))) { A.c[k] = +e.target.value; persist(); aWatch(); }
 });
 $('#aRst').onclick = () => { if (confirm('ล้างสถิติออโต้ทั้งหมด?')) { A.stats = []; A.cool = {}; persist(); aDraw(); } };
 const aSched = async () => { await aLoop(); setTimeout(aSched, A.c.trigTf === '1m' ? 1e4 : 3e4); }; setTimeout(aSched, 3e4); setInterval(aTick, 5000); aDraw();
