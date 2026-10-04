@@ -162,7 +162,7 @@ const uOpt = u => `<select data-u="${u[1]}"><option value="R"${A.c[u[1]] !== 'pc
 $('#autoBox').innerHTML = `<label><input type="checkbox" id="aOn"> เปิดออโต้เทรดจำลอง (ต้องเปิดหน้านี้ทิ้งไว้ และใช้ TF ที่เลือกอยู่ในการสแกน)</label>
   <label><input type="checkbox" id="aRaw"> โหมดทดสอบไม่กรอง (เข้าทันทีตามทิศที่สแกน ไม่สนตัวกรอง สัญญาณ และกันชน BTC แต่ยังใช้กติกาจัดการเงิน)</label>
   <div class="sr4"><label>โหมดไซซ์ต่อไม้<select data-a="mode"><option value="fixed">มาร์จิ้นคงที่ (USDT + Leverage)</option><option value="risk">คิดจากความเสี่ยง %</option></select></label><label>ไทม์เฟรมสัญญาณเข้า<select data-a="trigTf"><option value="5m">5m</option><option value="1m">1m (SL/ATR ยังคิดจาก 5m)</option></select></label>${AF.map(([k, t]) => `<label>${t}<input type="number" step="any" data-a="${k}" value="${A.c[k]}"></label>`).join('')}
-  ${UF.map(([k, u, t]) => `<label>${t}<div class="sr2"><input type="number" step="any" data-a="${k}" value="${A.c[k]}">${uOpt(u)}</div></label>`).join('')}</div>
+  ${UF.map(([k, u, t]) => `<label>${t}<div class="sr2"><input type="number" step="any" data-a="${k}" value="${A.c[k]}">${uOpt([k, u])}</div></label>`).join('')}</div>
   <div id="aSt"></div><div id="aChk"></div><div id="aRej" style="font-size:12px;color:var(--mu);margin:6px 0"></div>
   <table id="aTb"><thead><tr><th>ป้าย</th><th>ชนะ/ทั้งหมด</th><th>เฉลี่ย R</th><th>PnL สุทธิ</th><th>เฉลี่ย/ไม้</th><th>ไม้ชนะเฉลี่ย</th><th>ไม้แพ้เฉลี่ย</th></tr></thead><tbody></tbody></table>
   <div id="aLog"></div><button id="aRst">ล้างสถิติออโต้</button>`;
