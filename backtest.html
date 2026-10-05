@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ทดสอบย้อนหลัง scanline</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+<style>#grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin:10px 0}#prog,#sum,#skips,.note{margin:8px 0;color:var(--mu);font-size:13px}#sum b{color:var(--tx)}h2{margin:18px 0 6px}a{color:var(--ac)}</style>
+</head>
+<body>
+<header><h1>ทดสอบย้อนหลัง</h1><a href="index.html">กลับหน้าสแกน</a></header>
+<main>
+<div class="note">จำลองตรรกะเดียวกับออโต้เทรดในแอพ (สำเนาแยก ไม่แตะข้อมูลของแอพ) ค่าเริ่มต้นอ่านจากค่าที่ตั้งไว้ในแอพ แก้ได้ในหน้านี้</div>
+<label>เหรียญ (คั่นด้วยคอมมา เช่น SOL, DOGE, INJ)<input id="coins" value="SOL, DOGE, INJ, ADA, AVAX"></label>
+<div id="grid"></div>
+<button id="run">เริ่มทดสอบ</button>
+<div id="prog"></div><div id="sum"></div><div id="skips"></div><div id="out"></div>
+<div class="note">ข้อจำกัด: ใช้ราคาล่าสุดแทน Mark Price, ไม่มีสลิป/สเปรด/Funding ระหว่างถือ, จัดการไม้ด้วยแท่ง 5m (SL เช็กด้วยระดับต้นแท่งก่อน แล้วค่อยขยับล็อก/ตามหลังตามราคาสูงสุด-ต่ำสุดของแท่ง), ไม่นับคะแนน OI, รองรับเฉพาะโหมดมาร์จิ้นคงที่ + สัญญาณ 5m</div>
+</main>
+<script>
+const FEE = 0.0005, MIN = 6e4, API = 'https://fapi.binance.com', $ = s => document.querySelector(s), sleep = ms => new Promise(r => setTimeout(r, ms));
+const j = async p => { for (let n = 0; ; n++) { try { const r = await fetch(API + p); if (!r.ok) throw new Error(r.status); return await r.json(); } catch (e) { if (n >= 2) throw e; await sleep(1500); } } };
+const TFMS = { '5m': 3e5, '15m': 9e5, '1h': 36e5, '4h': 144e5, '1d': 864e5 }, TOD = { '5m': 1000, '15m': 960, '1h': 240 };
+const BAD = ['ใกล้รอบ Funding', 'ATR ต่ำ', '4h สวนทาง', 'ไกลจาก EMA20'];
+const DEF = { margin: 100, lev: 10, maxSl: 1, trail: 0.5, trailUnit: 'R', maxOpen: 3, dayLoss: 3, minScore: 3, cool: 60, beR: 1, beUnit: 'R', netTp: 3, maxLoss: 3, maxRun: 1.5, btcMove: 1.5, raw: false };
+let sa = {}, sc = {}; try { sa = JSON.parse(localStorage.auto || '{}').c || {}; sc = JSON.parse(localStorage.cfg || '{}'); } catch (e) {}
+const P0 = Object.assign({ tf: localStorage.tf || '1h', days: 30, cap: 10000, minAtr: 0.4, volMult: 2, look: 20 }, DEF, sc, sa);
+const F = [['tf', 'TF สแกน', 'sel', ['5m', '15m', '1h', '4h', '1d']], ['days', 'ย้อนหลัง (วัน สูงสุด 30)', 'num'], ['cap', 'ทุนเริ่มต้น (USDT)', 'num'], ['minScore', 'คะแนนต่ำสุด', 'num'], ['raw', 'โหมดทดสอบไม่กรอง', 'chk'],
+  ['margin', 'มาร์จิ้นต่อไม้ (USDT)', 'num'], ['lev', 'Leverage (x)', 'num'], ['netTp', 'กำไรสุทธิเป้าหมาย (0 = ไม่ตั้ง TP)', 'num'], ['maxLoss', 'ขาดทุนสุทธิสูงสุดต่อไม้', 'num'], ['maxSl', 'SL กว้างสุด (% ของราคา)', 'num'],
+  ['maxOpen', 'ออเดอร์พร้อมกันสูงสุด', 'num'], ['dayLoss', 'หยุดทั้งวันเมื่อขาดทุน (% พอร์ต)', 'num'], ['cool', 'พักเหรียญหลังโดน SL (นาที)', 'num'],
+  ['beR', 'เริ่มล็อก SL เมื่อกำไรถึง', 'num'], ['beUnit', 'หน่วยล็อก (R = เท่าของ SL)', 'sel', ['R', 'pct']], ['trail', 'ระยะ SL ตามหลัง (0 = ไม่ตาม)', 'num'], ['trailUnit', 'หน่วยตามหลัง', 'sel', ['R', 'pct']],
+  ['maxRun', 'แท่งสัญญาณยาวสุด (เท่า ATR)', 'num'], ['btcMove', 'กันชน BTC 1h (%) (99 = ปิด)', 'num'], ['minAtr', 'ATR ขั้นต่ำ (%)', 'num'], ['volMult', 'วอลุ่มพุ่งกี่เท่า', 'num'], ['look', 'แท่งย้อนหลัง Breakout', 'num']];
+$('#grid').innerHTML = F.map(([k, t, ty, o]) => `<label>${t}${ty === 'sel' ? `<select data-k="${k}">${o.map(v => `<option${P0[k] === v ? ' selected' : ''}>${v}</option>`).join('')}</select>` : ty === 'chk' ? `<input type="checkbox" data-k="${k}"${P0[k] ? ' checked' : ''}>` : `<input type="number" step="any" data-k="${k}" value="${P0[k]}">`}</label>`).join('');
+const readP = () => { const q = {}; document.querySelectorAll('[data-k]').forEach(e => q[e.dataset.k] = e.type === 'checkbox' ? e.checked : e.tagName === 'SELECT' ? e.value : +e.value); q.days = Math.min(30, Math.max(1, q.days || 30)); return q; };
+
+const ema = (a, n) => { const k = 2 / (n + 1); let e = a[0]; return a.map(v => e = v * k + e * (1 - k)); };
+const rsi = (c, n = 14) => { let g = 0, l = 0; for (let i = 1; i <= n; i++) { const d = c[i] - c[i - 1]; d > 0 ? g += d : l -= d; } g /= n; l /= n;
+  for (let i = n + 1; i < c.length; i++) { const d = c[i] - c[i - 1]; g = (g * (n - 1) + Math.max(d, 0)) / n; l = (l * (n - 1) + Math.max(-d, 0)) / n; } return l ? 100 - 100 / (1 + g / l) : 100; };
+const adx = (h, l, c, n = 14) => { let tr = 0, p = 0, m = 0; const dx = [];
+  for (let i = 1; i < c.length; i++) { const t = Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])), u = h[i] - h[i - 1], d = l[i - 1] - l[i], P = u > d && u > 0 ? u : 0, M = d > u && d > 0 ? d : 0;
+    if (i <= n) { tr += t; p += P; m += M; } else { tr = tr - tr / n + t; p = p - p / n + P; m = m - m / n + M; }
+    if (i >= n) { const pi = 100 * p / tr, mi = 100 * m / tr; dx.push(100 * Math.abs(pi - mi) / ((pi + mi) || 1)); } }
+  let a = dx.slice(0, n).reduce((s, v) => s + v, 0) / n; for (let i = n; i < dx.length; i++) a = (a * (n - 1) + dx[i]) / n; return a; };
+
+async function klines(sym, iv, from, to) { const out = []; let s = from;
+  while (s < to) { const r = await j(`/fapi/v1/klines?symbol=${sym}&interval=${iv}&startTime=${s}&endTime=${to}&limit=1500`); if (!r.length) break; out.push(...r); s = r[r.length - 1][0] + 1; if (r.length < 1500) break; await sleep(120); }
+  return out; }
+const pack = k => ({ T: k.map(x => x[0]), o: k.map(x => +x[1]), h: k.map(x => +x[2]), l: k.map(x => +x[3]), c: k.map(x => +x[4]), v: k.map(x => +x[5]) });
+const cache = {};
+async function load(sym, p) {
+  const key = sym + '|' + p.tf + '|' + p.days; if (cache[key]) return cache[key];
+  const end = Date.now(), start = end - p.days * 864e5, warm = Math.max(11 * 864e5, 105 * TFMS[p.tf]), fix = k => k.filter(x => x[6] < end);
+  const k5 = fix(await klines(sym, '5m', start - 36e5, end)), kt = fix(await klines(sym, p.tf, start - warm, end)), k4 = fix(await klines(sym, '4h', start - 62 * 144e5, end));
+  const fr = (await j(`/fapi/v1/fundingRate?symbol=${sym}&startTime=${start - 864e5}&limit=1000`).catch(() => [])).map(x => [x.fundingTime, +x.fundingRate * 100]);
+  return cache[key] = { start, end, m5: pack(k5), t: pack(kt), k4: pack(k4), fr };
+}
+async function loadBtc(p) { const key = 'BTC|' + p.days; if (cache[key]) return cache[key]; const end = Date.now(); return cache[key] = pack((await klines('BTCUSDT', '1h', end - (p.days + 3) * 864e5, end)).filter(x => x[6] < end)); }
+
+function sim(coins, btc, p) {
+  const L1 = TFMS[p.tf], t0 = Math.max(...coins.map(c => c.d.start)), t1 = Math.min(...coins.map(c => c.d.end)), byS = {};
+  let bal = p.cap, pos = [], stats = [], skips = {}, cool = {}, day = { k: '', eq: 0, pnl: 0 }, bp = 0;
+  const sk = r => skips[r] = (skips[r] || 0) + 1;
+  coins.forEach(c => { c.i5 = new Map(c.d.m5.T.map((t, i) => [t, i])); c.cnt = 0; c.cnt4 = 0; c.fp = 0; byS[c.sym] = c; });
+  const btcAt = tc => { while (bp < btc.T.length && btc.T[bp] + 36e5 <= tc) bp++; return bp >= 2 ? (btc.c[bp - 1] / btc.c[bp - 2] - 1) * 100 : 0; };
+  const cl = (o, px, why, T) => { const L = o.side === 'LONG', g = (L ? px - o.entry : o.entry - px) * o.qty, f = o.qty * px * FEE, pnl = g - f - o.fee;
+    bal += o.m + g - f; day.pnl += pnl; if ((why === 'SL' && pnl < 0) || p.raw) cool[o.sym] = T;
+    stats.push({ T, sym: o.sym, side: o.side, s: o.s, entry: o.entry, exit: px, pnl, fees: f + o.fee, why, be: o.be }); pos.splice(pos.indexOf(o), 1); };
+  const scan = (c, tc, i) => {
+    const t = c.d.t, n = p.look; while (c.cnt < t.T.length && t.T[c.cnt] + L1 <= tc) c.cnt++;
+    const e = c.cnt; if (e < 100) return null;
+    const h = t.h.slice(e - 99, e), l = t.l.slice(e - 99, e), cc = t.c.slice(e - 99, e), v = t.v.slice(e - 99, e), live = c.d.m5.c[i], openCur = e < t.T.length ? t.o[e] : live, last = 98;
+    const vr = v[last] / (v.slice(-n - 1, -1).reduce((s, x) => s + x, 0) / n), hi = Math.max(...h.slice(-n - 1, -1)), lo = Math.min(...l.slice(-n - 1, -1));
+    const e20 = ema(cc, 20)[last], up = e20 > ema(cc, 50)[last], ax = adx(h, l, cc), r = rsi(cc);
+    let s = 0, dir = up ? 'LONG' : 'SHORT'; const warn = [];
+    if (vr >= p.volMult) s += 2;
+    if (cc[last] > hi) { s += 2; dir = 'LONG'; } else if (cc[last] < lo) { s += 2; dir = 'SHORT'; }
+    else if (live > Math.max(hi, h[last])) { s += 1; dir = 'LONG'; } else if (live < Math.min(lo, l[last])) { s += 1; dir = 'SHORT'; }
+    if (ax > 25 && (dir === 'LONG') === up) s += 1;
+    const fr = c.d.fr; while (c.fp + 1 < fr.length && fr[c.fp + 1][0] <= tc) c.fp++; const f = fr.length && fr[c.fp][0] <= tc ? fr[c.fp][1] : 0; if (Math.abs(f) >= 0.05) s += 1;
+    const atr = cc.slice(-14).map((_, q) => { const z = 99 - 14 + q; return Math.max(h[z] - l[z], Math.abs(h[z] - cc[z - 1]), Math.abs(l[z] - cc[z - 1])); }).reduce((a, x) => a + x, 0) / 14, atrp = atr / cc[last] * 100;
+    const swing = (a, upv) => a.filter((v, q) => q > 1 && q < a.length - 2 && [-2, -1, 1, 2].every(o => upv ? v > a[q + o] : v < a[q + o]));
+    const res = Math.min(...swing(h.slice(-60), true).filter(x => x > live), Infinity), sup = Math.max(...swing(l.slice(-60), false).filter(x => x < live), -Infinity);
+    if (atrp < p.minAtr) warn.push('ATR ต่ำ'); if (Math.abs(cc[last] - e20) > 2.5 * atr) warn.push('ไกลจาก EMA20');
+    if (s >= 2) {
+      const k4 = c.d.k4; while (c.cnt4 < k4.T.length && k4.T[c.cnt4] + 144e5 <= tc) c.cnt4++;
+      if (c.cnt4 >= 51) { const c4 = k4.c.slice(Math.max(0, c.cnt4 - 59), c.cnt4); if ((dir === 'LONG') === (ema(c4, 20).at(-1) > ema(c4, 50).at(-1))) s += 1; else warn.push('4h สวนทาง'); }
+      if (TOD[p.tf]) { const cn = Math.min(e, TOD[p.tf] - 1), lt = t.T[e - 1], same = []; for (let q = e - cn; q <= e - 2; q++) if ((lt - t.T[q]) % 864e5 === 0) same.push(t.v[q]);
+        if (same.length >= 2 && t.v[e - 1] / (same.reduce((a, x) => a + x, 0) / same.length) >= 2) s += 1; }
+      if (Math.abs(f) >= 0.05 && (Math.ceil(tc / 288e5) * 288e5 - tc) / MIN <= 30) warn.push('ใกล้รอบ Funding');
+    }
+    return { sym: c.sym, dir, s, warn: warn.join(' | '), r, res, sup, atr };
+  };
+  const trig = (c, i, x) => {
+    const b = c.d.m5, L = x.dir === 'LONG'; if (i < 30) return null;
+    let a = 0; for (let q = i - 13; q <= i; q++) a += Math.max(b.h[q] - b.l[q], Math.abs(b.h[q] - b.c[q - 1]), Math.abs(b.l[q] - b.c[q - 1])); const atr = a / 14;
+    if (!p.raw) {
+      if (!(L ? b.c[i] > Math.max(...b.h.slice(i - 6, i)) : b.c[i] < Math.min(...b.l.slice(i - 6, i)))) { sk('สัญญาณ: ยังไม่ทะลุโครงสร้างแท่ง'); return null; }
+      if (b.v[i] < b.v.slice(i - 20, i).reduce((s, q) => s + q, 0) / 20) { sk('สัญญาณ: วอลุ่มแท่งต่ำ'); return null; }
+      if (Math.abs(b.c[i] - b.o[i]) > p.maxRun * atr) { sk('สัญญาณ: แท่งยาวเกิน'); return null; }
+    }
+    return { atr, swing: L ? Math.min(...b.l.slice(i - 9, i + 1)) : Math.max(...b.h.slice(i - 9, i + 1)) };
+  };
+  const open = (c, i, x, t, T) => {
+    const en = c.d.m5.c[i], L = x.dir === 'LONG', skip = r => { sk('เปิดไม้: ' + r); };
+    let d = Math.abs(en - t.swing) + 0.1 * t.atr; d = d > 3 * t.atr ? 1.5 * t.atr : Math.max(d, t.atr);
+    if (d / en < 0.002) return skip('SL แคบเกินค่าธรรมเนียม'); if (d / en * 100 > p.maxSl) return skip('SL กว้างเกินเพดาน %');
+    const sl = en + (L ? -d : d), lv = Math.max(1, Math.round(p.lev)), N = p.margin * lv, qty = N / en, fees = 2 * N * FEE, loss = d * qty + fees, dt = p.netTp > 0 ? (p.netTp + fees) / qty : 0;
+    if (loss > p.maxLoss) return skip('ขาดทุนที่ SL เกินเพดาน');
+    const lvl = L ? x.res : x.sup; if (dt && isFinite(lvl) && (L ? lvl > en : lvl < en) && Math.abs(lvl - en) < dt * 1.1) return skip('แนวรับ/ต้านก่อนถึง TP');
+    const liq = en * (L ? 1 - 1 / lv + 0.005 : 1 + 1 / lv - 0.005), m = N / lv, fee = N * FEE; if (L ? liq >= sl : liq <= sl) return skip('Liq ก่อน SL'); if (m < 5 || m + fee > bal) return skip('เงินว่างไม่พอ');
+    bal -= m + fee;
+    pos.push({ sym: x.sym, side: x.dir, entry: en, qty, m, tp: dt ? en + (L ? dt : -dt) : 0, sl, fee, s: x.s, be: false, best: 0, beD: p.beUnit === 'pct' ? en * p.beR / 100 : p.beR * d, trD: p.trailUnit === 'pct' ? en * p.trail / 100 : p.trail * d });
+  };
+  const times = [...new Set(coins.flatMap(c => c.d.m5.T.filter(t => t >= t0 && t + 3e5 <= t1)))].sort((a, b) => a - b);
+  for (const T of times) {
+    const tc = T + 3e5, dk = new Date(T).toDateString(); if (day.k !== dk) day = { k: dk, eq: bal + pos.reduce((s, o) => s + o.m, 0), pnl: 0 };
+    for (const o of pos.slice()) {
+      const c = byS[o.sym], i = c.i5.get(T); if (i === undefined) continue; const b = c.d.m5, hi = b.h[i], lo = b.l[i], L = o.side === 'LONG';
+      if (L ? lo <= o.sl : hi >= o.sl) { cl(o, o.sl, 'SL', T); continue; }
+      if (o.tp && (L ? hi >= o.tp : lo <= o.tp)) { cl(o, o.tp, 'TP', T); continue; }
+      const fav = L ? hi : lo;
+      if (!o.be && (L ? fav - o.entry : o.entry - fav) >= o.beD) { o.be = true; o.best = fav; o.sl = L ? Math.max(o.sl, o.entry + o.beD) : Math.min(o.sl, o.entry - o.beD); }
+      if (o.be) { o.best = L ? Math.max(o.best, fav) : Math.min(o.best, fav); if (o.trD > 0) { const ns = o.best + (L ? -o.trD : o.trD); if (L ? ns > o.sl : ns < o.sl) o.sl = ns; } }
+    }
+    const out = []; for (const c of coins) { const i = c.i5.get(T); if (i === undefined) continue; const x = scan(c, tc, i); if (x) out.push([x, c, i]); }
+    out.sort((a, b) => b[0].s - a[0].s);
+    if (day.pnl <= -day.eq * p.dayLoss / 100) continue;
+    const bc = p.raw ? 0 : btcAt(tc);
+    for (const [x, c, i] of out) {
+      if (!x.dir || x.s < p.minScore) continue;
+      if (!p.raw && (BAD.some(b => x.warn.includes(b)) || (x.dir === 'LONG' ? x.r > 75 : x.r < 25))) continue;
+      if (pos.length >= p.maxOpen) { sk('ก่อนสัญญาณ: ออเดอร์เต็ม'); break; }
+      if (pos.some(o => o.sym === x.sym)) continue;
+      if (T - (cool[x.sym] ?? -1e15) < p.cool * MIN) { sk('ก่อนสัญญาณ: พักเหรียญ'); continue; }
+      if (!p.raw && (x.dir === 'LONG' ? bc <= -p.btcMove : bc >= p.btcMove)) { sk('ก่อนสัญญาณ: BTC เหวี่ยงสวนทาง'); continue; }
+      const t = trig(c, i, x); if (t) { sk('ผ่านสัญญาณ (ส่งให้เปิดไม้)'); open(c, i, x, t, T); }
+    }
+  }
+  pos.slice().forEach(o => cl(o, byS[o.sym].d.m5.c.at(-1), 'สิ้นสุดข้อมูล', t1));
+  return { stats, skips, t0, t1, bal };
+}
+
+const agg = a => { const w = a.filter(s => s.pnl > 0), ls = a.filter(s => s.pnl <= 0), sum = b => b.reduce((s, x) => s + x.pnl, 0); return { n: a.length, w: w.length, pnl: sum(a), aw: w.length ? sum(w) / w.length : 0, al: ls.length ? sum(ls) / ls.length : 0, avg: a.length ? sum(a) / a.length : 0 }; };
+const row = (t, a) => { const g = agg(a); return `<tr><td>${t}</td><td>${g.w}/${g.n} ${g.n ? Math.round(g.w / g.n * 100) : 0}%</td><td class="${g.pnl >= 0 ? 'up' : 'dn'}">${g.pnl.toFixed(2)}</td><td class="${g.avg >= 0 ? 'up' : 'dn'}">${g.avg.toFixed(2)}</td><td class="up">${g.aw.toFixed(2)}</td><td class="dn">${g.al.toFixed(2)}</td></tr>`; };
+const tbl = (rows, h = 'ป้าย') => `<div class="tw"><table class="tb"><thead><tr><th>${h}</th><th>ชนะ/ทั้งหมด</th><th>PnL สุทธิ</th><th>เฉลี่ย/ไม้</th><th>ไม้ชนะเฉลี่ย</th><th>ไม้แพ้เฉลี่ย</th></tr></thead><tbody>${rows.join('')}</tbody></table></div>`;
+const tf = t => new Date(t).toLocaleString('th-TH', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+
+function render(r, p) {
+  const S = r.stats, g = agg(S), fees = S.reduce((s, x) => s + x.fees, 0), be = g.aw + Math.abs(g.al) ? Math.abs(g.al) / (g.aw + Math.abs(g.al)) * 100 : 0;
+  $('#sum').innerHTML = S.length ? `<b>${g.n} ไม้</b> | ชนะ ${g.w} (${Math.round(g.w / g.n * 100)}%) | จุดเสมอตัวอัตราชนะ ~${be.toFixed(0)}% | PnL สุทธิ <b class="${g.pnl >= 0 ? 'up' : 'dn'}">${g.pnl.toFixed(2)}</b> USDT | ค่าธรรมเนียมรวม ${fees.toFixed(2)} | ก่อนหักค่าธรรมเนียม ${(g.pnl + fees).toFixed(2)} | ทุนสุดท้าย ${r.bal.toFixed(2)}` : 'ไม่มีไม้เกิดขึ้นในช่วงนี้ ลองลดคะแนนต่ำสุด เพิ่มเหรียญ หรือผ่อนเพดานขาดทุน';
+  $('#skips').textContent = 'ครั้งที่ตัด/ผ่าน (เหรียญ-แท่ง): ' + (Object.entries(r.skips).sort((a, b) => b[1] - a[1]).map(([k, n]) => k + ': ' + n).join(' | ') || '-');
+  const wk = {}; S.forEach(s => { const w = Math.floor((s.T - r.t0) / (7 * 864e5)) + 1; (wk[w] = wk[w] || []).push(s); });
+  const cs = {}; S.forEach(s => (cs[s.sym] = cs[s.sym] || []).push(s));
+  $('#out').innerHTML = '<h2>สรุป</h2>' + tbl([row('ทั้งหมด', S), row('คะแนน 2', S.filter(s => s.s === 2)), row('คะแนน 3', S.filter(s => s.s === 3)), row('คะแนน 4+', S.filter(s => s.s >= 4)), row('ปิดที่ TP', S.filter(s => s.why === 'TP')),
+      row('SL หลังล็อกกำไร', S.filter(s => s.why === 'SL' && s.be)), row('SL ก่อนล็อก', S.filter(s => s.why === 'SL' && !s.be)), row('สิ้นสุดข้อมูล', S.filter(s => s.why === 'สิ้นสุดข้อมูล'))])
+    + '<h2>รายสัปดาห์ (ดูว่าผลสม่ำเสมอไหม)</h2>' + tbl(Object.keys(wk).sort((a, b) => a - b).map(w => row('สัปดาห์ ' + w, wk[w])), 'ช่วง')
+    + '<h2>รายเหรียญ</h2>' + tbl(Object.keys(cs).sort().map(s => row(s.replace('USDT', ''), cs[s])), 'เหรียญ')
+    + `<details><summary>รายการไม้ทั้งหมด (${S.length})</summary><div class="tw"><table class="tb"><thead><tr><th>เวลาปิด</th><th>เหรียญ</th><th>ทิศ</th><th>คะแนน</th><th>เข้า</th><th>ปิด</th><th>สุทธิ</th><th>เหตุผล</th></tr></thead><tbody>${S.slice().reverse().map(s => `<tr><td>${tf(s.T)}</td><td>${s.sym.replace('USDT', '')}</td><td>${s.side === 'LONG' ? 'Long' : 'Short'}</td><td>${s.s}</td><td>${+s.entry.toPrecision(6)}</td><td>${+s.exit.toPrecision(6)}</td><td class="${s.pnl >= 0 ? 'up' : 'dn'}">${s.pnl.toFixed(2)}</td><td>${s.why}${s.why === 'SL' && s.be ? ' (ล็อกแล้ว)' : ''}</td></tr>`).join('')}</tbody></table></div></details>`;
+}
+
+$('#run').onclick = async () => {
+  const p = readP(), syms = [...new Set($('#coins').value.toUpperCase().split(/[\s,]+/).filter(Boolean).map(s => s.endsWith('USDT') ? s : s + 'USDT'))], coins = [], bad = [];
+  $('#run').disabled = true; $('#sum').textContent = $('#skips').textContent = $('#out').innerHTML = '';
+  try {
+    for (let n = 0; n < syms.length; n++) { $('#prog').textContent = `กำลังโหลดข้อมูล ${syms[n]} (${n + 1}/${syms.length})…`; try { coins.push({ sym: syms[n], d: await load(syms[n], p) }); } catch (e) { bad.push(syms[n]); } }
+    if (!coins.length) throw new Error('โหลดข้อมูลไม่ได้เลย (ตรวจชื่อเหรียญ/เครือข่าย)');
+    $('#prog').textContent = 'กำลังโหลด BTC…'; const btc = await loadBtc(p);
+    $('#prog').textContent = 'กำลังจำลอง…'; await sleep(30);
+    render(sim(coins, btc, p), p);
+    $('#prog').textContent = `เสร็จแล้ว (${coins.length} เหรียญ)` + (bad.length ? ' | โหลดไม่สำเร็จ: ' + bad.join(', ') : '');
+  } catch (e) { $('#prog').textContent = 'ผิดพลาด: ' + e.message; }
+  $('#run').disabled = false;
+};
+</script>
+</body>
+</html>
