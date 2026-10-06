@@ -1,5 +1,5 @@
 /* ออโต้เทรดจำลอง: สแกน (ป้ายย่อ/สวนเทรนด์) -> รอสัญญาณกดไกบน 5m -> เปิดออเดอร์จำลองพร้อม SL/TP */
-const DEF = { mode: 'fixed', margin: 100, lev: 10, slPct: 1, tpPct: 1.8, trail: 0.5, trailUnit: 'R', risk: 1, maxOpen: 3, dayLoss: 3, minScore: 3, cool: 60, beR: 1, beUnit: 'R', rsiMax: 75 };
+const DEF = { mode: 'fixed', margin: 100, lev: 10, slPct: 1, tpPct: 1.8, trail: 0.5, trailUnit: 'R', risk: 1, maxOpen: 3, dayLoss: 3, minScore: 3, cool: 60, beR: 1, beUnit: 'R', rsiHi: 75, rsiLo: 25 };
 const A = Object.assign({ stats: [], cool: {}, day: { k: '', eq: 0, pnl: 0 } }, JSON.parse(localStorage.auto || '{}'));
 A.c = Object.assign({}, DEF, A.c); A.on = false; // เริ่มปิดทุกครั้งที่เปิดหน้า
 const persist = () => localStorage.auto = JSON.stringify(A);
@@ -18,7 +18,7 @@ function aWatch() {
   watch = lastOut.filter(x => {
     if (!x.dir) return false;
     const shown = x.s >= 2; if (shown) n++; // นับเฉพาะเหรียญที่ขึ้นในลิสต์สแกน
-    const why = x.s < A.c.minScore ? 'คะแนนต่ำกว่าเกณฑ์' : (BAD.find(b => x.warn.includes(b)) || ((A.c.rsiMax > 0 && (x.dir === 'LONG' ? x.r > A.c.rsiMax : x.r < 100 - A.c.rsiMax)) ? 'RSI สุดขอบ' : ''));
+    const why = x.s < A.c.minScore ? 'คะแนนต่ำกว่าเกณฑ์' : (BAD.find(b => x.warn.includes(b)) || ((x.dir === 'LONG' ? A.c.rsiHi > 0 && x.r > A.c.rsiHi : A.c.rsiLo > 0 && x.r < A.c.rsiLo) ? 'RSI สุดขอบ' : ''));
     if (why && shown) by[why] = (by[why] || 0) + 1;
     return !why;
   });
@@ -129,7 +129,7 @@ function aDraw() {
 }
 
 const AF = [['margin', 'มาร์จิ้นต่อไม้ (USDT) [โหมดคงที่]'], ['lev', 'Leverage (x) [โหมดคงที่]'], ['slPct', 'Stop Loss (% ของราคาเข้า)'], ['tpPct', 'Take Profit (% ของราคาเข้า)'], ['risk', 'เสี่ยงต่อไม้ (% พอร์ต) [โหมดความเสี่ยง]'], ['maxOpen', 'ออเดอร์พร้อมกันสูงสุด'], ['dayLoss', 'หยุดทั้งวันเมื่อขาดทุน (% พอร์ต)'],
-  ['minScore', 'คะแนนต่ำสุดที่ยอมเข้า'], ['cool', 'พักเหรียญหลังโดน SL (นาที)'], ['rsiMax', 'กัน RSI สุดขอบ (กัน Long เมื่อ RSI เกินค่านี้ / กัน Short เมื่อต่ำกว่า 100 ลบค่านี้, 0 = ปิด)']];
+  ['minScore', 'คะแนนต่ำสุดที่ยอมเข้า'], ['cool', 'พักเหรียญหลังโดน SL (นาที)'], ['rsiHi', 'ห้ามเข้า Long ถ้า RSI เกิน (0 = ปิด)'], ['rsiLo', 'ห้ามเข้า Short ถ้า RSI ต่ำกว่า (0 = ปิด)']];
 const UF = [['beR', 'beUnit', 'เริ่มขยับ SL (เท่าทุน) เมื่อกำไรถึง'], ['trail', 'trailUnit', 'ระยะ SL ตามหลังราคาสูงสุด (0 = ไม่ตาม)']];
 const uOpt = u => `<select data-u="${u[1]}"><option value="R"${A.c[u[1]] !== 'pct' ? ' selected' : ''}>เท่าของ SL (R)</option><option value="pct"${A.c[u[1]] === 'pct' ? ' selected' : ''}>% ของราคาเข้า</option></select>`;
 $('#autoBox').innerHTML = `<label><input type="checkbox" id="aOn"> เปิดออโต้เทรดจำลอง (ต้องเปิดหน้านี้ทิ้งไว้ และใช้ TF ที่เลือกอยู่ในการสแกน)</label>
@@ -144,7 +144,7 @@ $('#autoBox').addEventListener('change', e => {
   const k = e.target.dataset.a, u = e.target.dataset.u;
   if (k === 'mode') { A.c.mode = e.target.value; persist(); }
   else if (u) { A.c[u] = e.target.value; persist(); }
-  else if (k && (+e.target.value > 0 || (k === 'trail' && e.target.value !== '') || (k === 'rsiMax' && e.target.value !== '' && +e.target.value >= 0))) { A.c[k] = +e.target.value; persist(); aWatch(); }
+  else if (k && (+e.target.value > 0 || (k === 'trail' && e.target.value !== '') || ((k === 'rsiHi' || k === 'rsiLo') && e.target.value !== '' && +e.target.value >= 0))) { A.c[k] = +e.target.value; persist(); aWatch(); }
 });
 $('#aRst').onclick = () => { if (confirm('ล้างสถิติออโต้ทั้งหมด?')) { A.stats = []; A.cool = {}; A.rej = {}; persist(); aDraw(); } };
 setInterval(aLoop, 30000); setInterval(aTick, 5000); aDraw();
