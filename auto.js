@@ -1,9 +1,9 @@
 /* ออโต้เทรดจำลอง: สแกน (ป้ายย่อ/สวนเทรนด์) -> รอสัญญาณกดไกบน 5m -> เปิดออเดอร์จำลองพร้อม SL/TP */
-const DEF = { mode: 'fixed', margin: 100, lev: 10, slPct: 1, tpPct: 1.8, trail: 0.5, trailUnit: 'R', risk: 1, maxOpen: 3, dayLoss: 3, minScore: 3, cool: 60, beR: 1, beUnit: 'R' };
+const DEF = { mode: 'fixed', margin: 100, lev: 10, slPct: 1, tpPct: 1.8, trail: 0.5, trailUnit: 'R', risk: 1, maxOpen: 3, dayLoss: 3, minScore: 3, cool: 60, beR: 1, beUnit: 'R', btcF: true };
 const A = Object.assign({ stats: [], cool: {}, day: { k: '', eq: 0, pnl: 0 } }, JSON.parse(localStorage.auto || '{}'));
 A.c = Object.assign({}, DEF, A.c); A.on = false; // เริ่มปิดทุกครั้งที่เปิดหน้า
 const persist = () => localStorage.auto = JSON.stringify(A);
-const BAD = ['ใกล้รอบ Funding', 'ATR ต่ำ']; // เอา 'สวนทิศ BTC' ออก: เหรียญเข้าตามทิศสัญญาณของตัวเอง (อยากกลับไปกรอง BTC ให้ใส่ 'สวนทิศ BTC' กลับเป็นตัวแรกในรายการ) // R:R ให้ aOpen เช็กด้วย SL จริงบน 5m แทน
+const BADB = ['สวนทิศ BTC', 'ใกล้รอบ Funding', 'ATR ต่ำ'], BAD0 = ['ใกล้รอบ Funding', 'ATR ต่ำ']; const bads = () => A.c.btcF ? BADB : BAD0; // ติ๊ก btcF ในหน้าตั้งค่า = กรองสวนทิศ BTC (ค่าเริ่มต้น: กรอง)
 let watch = [], logs = [], seen = {}, busy = false, chk = null, lastErrLog = 0;
 A.rej = A.rej || {}; const rejSeen = {}; let scanRej = { n: 0, ok: 0, by: {} }, lastOut = [];
 const rej = (k, sym) => { const b = Math.floor(Date.now() / 3e5); if (sym) { const kk = sym + '|' + k; if (rejSeen[kk] === b) return; rejSeen[kk] = b; } A.rej[k] = (A.rej[k] || 0) + 1; }; // นับเหตุผลที่ตัด (เหรียญ+เหตุผลเดียวกันนับครั้งเดียวต่อ 5 นาที) ไม่กระทบการเทรด
@@ -18,7 +18,7 @@ function aWatch() {
   watch = lastOut.filter(x => {
     if (!x.dir) return false;
     const shown = x.s >= 2; if (shown) n++; // นับเฉพาะเหรียญที่ขึ้นในลิสต์สแกน
-    const why = x.s < A.c.minScore ? 'คะแนนต่ำกว่าเกณฑ์' : (BAD.find(b => x.warn.includes(b)) || '');
+    const why = x.s < A.c.minScore ? 'คะแนนต่ำกว่าเกณฑ์' : (bads().find(b => x.warn.includes(b)) || '');
     if (why && shown) by[why] = (by[why] || 0) + 1;
     return !why;
   });
@@ -133,7 +133,7 @@ const AF = [['margin', 'มาร์จิ้นต่อไม้ (USDT) [โ�
 const UF = [['beR', 'beUnit', 'เริ่มขยับ SL (เท่าทุน) เมื่อกำไรถึง'], ['trail', 'trailUnit', 'ระยะ SL ตามหลังราคาสูงสุด (0 = ไม่ตาม)']];
 const uOpt = u => `<select data-u="${u[1]}"><option value="R"${A.c[u[1]] !== 'pct' ? ' selected' : ''}>เท่าของ SL (R)</option><option value="pct"${A.c[u[1]] === 'pct' ? ' selected' : ''}>% ของราคาเข้า</option></select>`;
 $('#autoBox').innerHTML = `<label><input type="checkbox" id="aOn"> เปิดออโต้เทรดจำลอง (ต้องเปิดหน้านี้ทิ้งไว้ และใช้ TF ที่เลือกอยู่ในการสแกน)</label>
-  <div class="sr4"><label>โหมดไซซ์ต่อไม้<select data-a="mode"><option value="fixed">มาร์จิ้นคงที่ (USDT + Leverage)</option><option value="risk">คิดจากความเสี่ยง %</option></select></label>${AF.map(([k, t]) => `<label>${t}<input type="number" step="any" data-a="${k}" value="${A.c[k]}"></label>`).join('')}
+  <div class="sr4"><label>กรองสวนทิศ BTC (ติ๊ก = กรอง)<input type="checkbox" data-a="btcF"${A.c.btcF ? ' checked' : ''}></label><label>โหมดไซซ์ต่อไม้<select data-a="mode"><option value="fixed">มาร์จิ้นคงที่ (USDT + Leverage)</option><option value="risk">คิดจากความเสี่ยง %</option></select></label>${AF.map(([k, t]) => `<label>${t}<input type="number" step="any" data-a="${k}" value="${A.c[k]}"></label>`).join('')}
   ${UF.map(([k, u, t]) => `<label>${t}<div class="sr2"><input type="number" step="any" data-a="${k}" value="${A.c[k]}">${uOpt([k, u])}</div></label>`).join('')}</div>
   <div id="aSt"></div><div id="aChk"></div><div id="aRej" style="font-size:12px;color:var(--mu);margin:6px 0"></div>
   <table id="aTb"><thead><tr><th>ป้าย</th><th>ชนะ/ทั้งหมด</th><th>เฉลี่ย R</th><th>PnL สุทธิ</th><th>เฉลี่ย/ไม้</th><th>ไม้ชนะเฉลี่ย</th><th>ไม้แพ้เฉลี่ย</th></tr></thead><tbody></tbody></table>
@@ -142,7 +142,8 @@ $('#autoBox select').value = A.c.mode;
 $('#aOn').onchange = e => { A.on = e.target.checked; aLog(A.on ? 'เปิดออโต้เทรดจำลอง' : 'ปิดออโต้เทรดจำลอง'); if (A.on) aLoop(); };
 $('#autoBox').addEventListener('change', e => {
   const k = e.target.dataset.a, u = e.target.dataset.u;
-  if (k === 'mode') { A.c.mode = e.target.value; persist(); }
+  if (k === 'btcF') { A.c.btcF = e.target.checked; persist(); aWatch(); }
+  else if (k === 'mode') { A.c.mode = e.target.value; persist(); }
   else if (u) { A.c[u] = e.target.value; persist(); }
   else if (k && (+e.target.value > 0 || (k === 'trail' && e.target.value !== ''))) { A.c[k] = +e.target.value; persist(); aWatch(); }
 });
