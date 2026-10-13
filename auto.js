@@ -1,5 +1,8 @@
-/* ออโต้เทรดจำลอง: สแกน (ป้ายย่อ/สวนเทรนด์) -> รอสัญญาณกดไกบน 5m -> เปิดออเดอร์จำลองพร้อม SL/TP */
-const DEF = { mode: 'fixed', margin: 100, lev: 10, slPct: 1, tpPct: 1.8, trail: 0.5, trailUnit: 'R', risk: 1, maxOpen: 3, dayLoss: 3, minScore: 3, cool: 60, beR: 1, beUnit: 'R', rsiHi: 75, rsiLo: 25 };
+/* ออโต้เทรดจำลอง: มี 2 กลยุทธ์ให้เลือก
+   - mtf (ใหม่): 1h ทิศทาง -> 15m โซน -> 5m ยืนยัน -> 1m กดไก -> เปิดออเดอร์จำลองทันที (SL ตามโครงสร้าง, TP ตาม RR, เช็กค่าธรรมเนียม)
+   - old: สแกน (ป้ายย่อ/สวนเทรนด์) -> รอสัญญาณกดไกบน 5m -> เปิดออเดอร์จำลองพร้อม SL/TP */
+const DEF = { mode: 'fixed', margin: 100, lev: 10, slPct: 1, tpPct: 1.8, trail: 0.5, trailUnit: 'R', risk: 1, maxOpen: 3, dayLoss: 3, minScore: 3, cool: 60, beR: 1, beUnit: 'R', rsiHi: 75, rsiLo: 25,
+  strat: 'mtf', rr: 2, feeMult: 3, mtAtr: 0.3, zoneAtr: 0.5, mtVol: 2, slMin: 0.2, slMax: 0.8, spread: 0.04, fundMax: 0.05 };
 const A = Object.assign({ stats: [], cool: {}, day: { k: '', eq: 0, pnl: 0 } }, JSON.parse(localStorage.auto || '{}'));
 A.c = Object.assign({}, DEF, A.c); A.on = false; // เริ่มปิดทุกครั้งที่เปิดหน้า
 const persist = () => localStorage.auto = JSON.stringify(A);
@@ -27,6 +30,7 @@ function aWatch() {
 }
 function autoOnScan(out) { lastOut = out; aWatch(); }
 
+/* ---------- กลยุทธ์เก่า (5m) ---------- */
 async function aTrigger(x) {
   const k = (await j(`/fapi/v1/klines?symbol=${x.sym}&interval=5m&limit=60`)).slice(0, -1);
   const key = k.at(-1)[0]; if (seen[x.sym] === key) return undefined; seen[x.sym] = key; // ตรวจแท่ง 5m ที่ปิดแล้วแท่งละครั้ง
@@ -39,11 +43,75 @@ async function aTrigger(x) {
   return { atr: tr.reduce((a, b) => a + b, 0) / 14, swing: L ? Math.min(...l.slice(-10)) : Math.max(...h.slice(-10)) };
 }
 
+/* ---------- กลยุทธ์ใหม่ หลาย TF ---------- */
+const aAtr = (h, l, c, n = 14) => { let s = 0; for (let i = c.length - n; i < c.length; i++) s += Math.max(h[i] - l[i], Math.abs(h[i] - c[i - 1]), Math.abs(l[i] - c[i - 1])); return s / n; };
+const aSwing = (a, up) => a.filter((v, i) => i > 1 && i < a.length - 2 && [-2, -1, 1, 2].every(o => up ? v > a[i + o] : v < a[i + o])); // up=true: swing high, false: swing low
+let mWatch = [], mPrepBusy = false, mPrepT = 0; const seenM = {};
+
+// ขั้น 1 (ทุก ~3 นาที): 1h ทิศทาง + 15m โซน/ATR/ที่ว่างถึงแนวตรงข้าม -> ได้ลิสต์เหรียญที่ "อยู่ในโซนตามเทรนด์"
+async function mAnalyze(s) {
+  const [k1, k15] = await Promise.all([j(`/fapi/v1/klines?symbol=${s.sym}&interval=1h&limit=250`), j(`/fapi/v1/klines?symbol=${s.sym}&interval=15m&limit=120`)]);
+  const c1 = k1.slice(0, -1).map(q => +q[4]);
+  if (c1.length < 210) { rej('MT: ข้อมูล 1h ไม่พอ', s.sym); return null; }
+  const e50 = ema(c1, 50).at(-1), e200 = ema(c1, 200).at(-1), cl = c1.at(-1);
+  const dir = e50 > e200 && cl > e200 ? 'LONG' : e50 < e200 && cl < e200 ? 'SHORT' : null;
+  if (!dir) { rej('MT: 1h ไม่มีเทรนด์ชัด', s.sym); return null; }
+  const L = dir === 'LONG';
+  if (L ? s.f >= A.c.fundMax : s.f <= -A.c.fundMax) { rej('MT: Funding แออัดฝั่งเดียวกับสัญญาณ', s.sym); return null; }
+  const kc = k15.slice(0, -1), h = kc.map(q => +q[2]), l = kc.map(q => +q[3]), c = kc.map(q => +q[4]), live = +k15.at(-1)[4];
+  const atr = aAtr(h, l, c);
+  if (atr / live * 100 < A.c.mtAtr) { rej('MT: ATR 15m ต่ำ (ไม่คุ้มค่าธรรมเนียม)', s.sym); return null; }
+  const tol = A.c.zoneAtr * atr;
+  const own = aSwing((L ? l : h).slice(-96), !L);                                  // Long = swing low (แนวรับ), Short = swing high (แนวต้าน)
+  const zone = own.filter(v => Math.abs(v - live) <= tol).sort((a, b) => Math.abs(a - live) - Math.abs(b - live))[0];
+  if (zone === undefined) { rej('MT: ราคายังไม่ถึงโซน 15m', s.sym); return null; }
+  const opp = aSwing((L ? h : l).slice(-96), L).filter(v => L ? v > live : v < live); // แนวตรงข้ามที่ใกล้สุด = ที่ว่างให้ราคาวิ่ง
+  const room = opp.length ? Math.min(...opp.map(v => Math.abs(v - live))) : Infinity;
+  return { sym: s.sym, dir, tag: 'MT', s: 0, zone, tol, room, atrp: atr / live * 100 };
+}
+async function mPrep() {
+  if (mPrepBusy || !lastOut.length) return; mPrepBusy = true;
+  try {
+    const syms = lastOut.map(x => ({ sym: x.sym, f: x.f })), out = []; let i = 0;
+    await Promise.all(Array(6).fill(0).map(async () => {
+      while (i < syms.length) { const s = syms[i++]; try { const r = await mAnalyze(s); if (r) out.push(r); } catch (e) {} }
+    }));
+    mWatch = out; mPrepT = Date.now();
+  } finally { mPrepBusy = false; aDraw(); }
+}
+
+// ขั้น 2 (ทุกแท่ง 1m ที่ปิด): 1m แท่งยืนยัน+วอลุ่มพุ่ง, 5m แตะโซนและกำลังกลับตัว, SL/TP/ค่าธรรมเนียม/ที่ว่าง/spread ผ่านครบ -> เข้าเลย
+async function mTrigger(x) {
+  const bar = Math.floor(Date.now() / 6e4); if (seenM[x.sym] === bar) return undefined; seenM[x.sym] = bar; // เช็กเหรียญละครั้งต่อนาที
+  const en = px[x.sym], L = x.dir === 'LONG'; if (!en) return undefined;
+  if (Math.abs(en - x.zone) > 2 * x.tol) { rej('MT: ราคาหนีโซนไปแล้ว (ไม่ไล่ราคา)', x.sym); return null; }
+  const k = (await j(`/fapi/v1/klines?symbol=${x.sym}&interval=1m&limit=40`)).slice(0, -1); // แท่ง 1m ที่ปิดแล้ว
+  const o = k.map(q => +q[1]), h = k.map(q => +q[2]), l = k.map(q => +q[3]), c = k.map(q => +q[4]), v = k.map(q => +q[5]), n = k.length - 1;
+  const mom = L ? c[n] > o[n] && c[n] > Math.max(...h.slice(n - 3, n)) : c[n] < o[n] && c[n] < Math.min(...l.slice(n - 3, n));
+  if (!mom) { rej('MT: 1m ยังไม่มีแท่งยืนยัน', x.sym); return null; }
+  const vr = v[n] / (v.slice(n - 20, n).reduce((a, b) => a + b, 0) / 20);
+  if (!(vr >= A.c.mtVol)) { rej('MT: 1m วอลุ่มยังไม่พุ่ง', x.sym); return null; }
+  const k5 = await j(`/fapi/v1/klines?symbol=${x.sym}&interval=5m&limit=10`), cur = k5.at(-1); // รวมแท่ง 5m ที่กำลังวิ่งอยู่
+  const touched = L ? Math.min(...k5.slice(-3).map(q => +q[3])) <= x.zone + x.tol : Math.max(...k5.slice(-3).map(q => +q[2])) >= x.zone - x.tol;
+  if (!touched) { rej('MT: 5m ยังไม่แตะโซน', x.sym); return null; }
+  if (L ? +cur[4] <= +cur[1] : +cur[4] >= +cur[1]) { rej('MT: 5m ยังไม่กลับตัว', x.sym); return null; }
+  const atr1 = aAtr(h, l, c), st = L ? Math.min(...l.slice(-10)) - 0.5 * atr1 : Math.max(...h.slice(-10)) + 0.5 * atr1; // SL ใต้/เหนือโครงสร้าง 1m ล่าสุด + บัฟเฟอร์
+  let d = L ? en - st : st - en;
+  if (d > en * A.c.slMax / 100) { rej('MT: SL ตามโครงสร้างกว้างเกิน', x.sym); return null; }
+  d = Math.max(d, en * A.c.slMin / 100);
+  const tpD = d * A.c.rr;
+  if (tpD / en * 100 < A.c.feeMult * 2 * FEE * 100) { rej('MT: กำไรเป้าหมายไม่คุ้มค่าธรรมเนียม', x.sym); return null; }
+  if (x.room < tpD) { rej('MT: แนวตรงข้ามใกล้กว่าเป้า TP', x.sym); return null; }
+  const bt = await j('/fapi/v1/ticker/bookTicker?symbol=' + x.sym), sp = (+bt.askPrice - +bt.bidPrice) / +bt.bidPrice * 100;
+  if (sp > A.c.spread) { rej('MT: Spread กว้างเกิน', x.sym); return null; }
+  return { atr: atr1, d, rr: A.c.rr, vr };
+}
+
 function aOpen(x, t) {
   const en = px[x.sym]; if (!en) return;
   const L = x.dir === 'LONG', skip = (w, k) => { rej(k, x.sym); aLog(`ข้าม ${x.sym}: ${w}`); };
-  const d = en * A.c.slPct / 100;                                // SL เปอร์เซ็นต์คงที่จากราคาเข้า
-  const sl = en + (L ? -d : d), tp = en + (L ? 1 : -1) * en * A.c.tpPct / 100; // TP เปอร์เซ็นต์คงที่จากราคาเข้า
+  const d = t.d || en * A.c.slPct / 100;                         // SL: กลยุทธ์ใหม่ใช้ระยะตามโครงสร้าง, กลยุทธ์เก่าใช้เปอร์เซ็นต์คงที่จากราคาเข้า
+  const sl = en + (L ? -d : d), tp = en + (L ? 1 : -1) * (t.rr ? t.rr * d : en * A.c.tpPct / 100); // TP: กลยุทธ์ใหม่ใช้ RR, กลยุทธ์เก่าใช้เปอร์เซ็นต์คงที่
   let lv, notional;
   if (A.c.mode === 'fixed') { lv = Math.max(1, Math.round(A.c.lev)); notional = A.c.margin * lv; }   // มาร์จิ้นและ Leverage คงที่
   else {                                                                                               // คิดจากความเสี่ยง %
@@ -58,27 +126,35 @@ function aOpen(x, t) {
   S.bal -= m + fee;
   S.pos.push({ id: Date.now() + Math.random(), sym: x.sym, side: x.dir, entry: en, qty: notional / en, m, lv, tp, sl, liq, fee, auto: true, tag: x.tag, score: x.s, d, riskUsd: notional * d / en, be: false, beR: A.c.beR, beUnit: A.c.beUnit, trail: A.c.trail, trailUnit: A.c.trailUnit });
   save(); draw();
-  aLog(`เข้า ${x.dir} ${x.sym} [${x.tag === 'PB' ? 'ย่อในเทรนด์' : x.tag === 'CT' ? 'สวนเทรนด์' : 'ทะลุกรอบ'} คะแนน ${x.s}] @${en} SL ${+sl.toPrecision(6)} TP ${+tp.toPrecision(6)} x${lv} มาร์จิ้น ${m.toFixed(0)} เสี่ยง ${(notional * d / en).toFixed(2)} USDT`);
+  const lab = x.tag === 'MT' ? 'หลาย TF 1h/15m/5m/1m' + (t.vr ? ' วอลุ่ม 1m x' + t.vr.toFixed(1) : '') : (x.tag === 'PB' ? 'ย่อในเทรนด์' : x.tag === 'CT' ? 'สวนเทรนด์' : 'ทะลุกรอบ') + ' คะแนน ' + x.s;
+  aLog(`เข้า ${x.dir} ${x.sym} [${lab}] @${en} SL ${+sl.toPrecision(6)} TP ${+tp.toPrecision(6)} x${lv} มาร์จิ้น ${m.toFixed(0)} เสี่ยง ${(notional * d / en).toFixed(2)} USDT`);
 }
 
+let lastOld = 0;
 async function aLoop() {
-  if (!A.on || busy) return; busy = true;
-  const p = { t: Date.now(), w: watch.length, fresh: 0, sig: 0, err: 0, msg: 'ปกติ' }; let lastErr = '';
+  if (!A.on || busy) return;
+  const mt = A.c.strat === 'mtf';
+  if (!mt) { if (Date.now() - lastOld < 29e3) return; lastOld = Date.now(); } // กลยุทธ์เก่าเช็กทุก 30 วินาทีเหมือนเดิม กลยุทธ์ใหม่เช็กทุก 15 วินาที
+  busy = true;
+  const list = mt ? mWatch : watch;
+  const p = { t: Date.now(), w: list.length, fresh: 0, sig: 0, err: 0, msg: 'ปกติ' }; let lastErr = '';
   try {
     if (aBlocked()) { p.msg = 'หยุดทั้งวัน (ขาดทุนถึงเพดาน)'; return; }
-    for (const x of watch) {
+    if (mt && Date.now() - mPrepT > 18e4) mPrep(); // ไม่รอ ให้ทำงานเบื้องหลัง
+    if (mt && !list.length) p.msg = mPrepT ? 'ยังไม่มีเหรียญอยู่ในโซนตามเทรนด์ 1h' : 'กำลังเตรียมข้อมูล 1h/15m ครั้งแรก…';
+    for (const x of list) {
       if (S.pos.length >= A.c.maxOpen) { p.msg = 'ออเดอร์เต็มแล้ว'; rej('ก่อนสัญญาณ: ออเดอร์เต็ม', '_'); break; }
       if (S.pos.some(o => o.sym === x.sym)) { rej('ก่อนสัญญาณ: เหรียญนี้มีไม้เปิดอยู่', x.sym); continue; }
       if (Date.now() - (A.cool[x.sym] || 0) < A.c.cool * 6e4) { rej('ก่อนสัญญาณ: พักเหรียญ', x.sym); continue; }
       try {
-        const t = await aTrigger(x);           // undefined = ยังไม่มีแท่งใหม่, null = แท่งใหม่แต่ไม่มีสัญญาณ
+        const t = mt ? await mTrigger(x) : await aTrigger(x); // undefined = ยังไม่มีแท่งใหม่, null = แท่งใหม่แต่ไม่มีสัญญาณ
         if (t !== undefined) p.fresh++;
         if (t) { p.sig++; rej('ผ่านสัญญาณ (ส่งให้เปิดไม้)', x.sym); aOpen(x, t); }
       } catch (e) { p.err++; lastErr = x.sym + ': ' + e.message; }
     }
     if (p.err) {
       p.msg = `error ${p.err} เหรียญ (${lastErr})`;
-      if (Date.now() - lastErrLog > 3e5) { lastErrLog = Date.now(); aLog('ดึงข้อมูล 5m ไม่สำเร็จ ' + lastErr); }
+      if (Date.now() - lastErrLog > 3e5) { lastErrLog = Date.now(); aLog('ดึงข้อมูลไม่สำเร็จ ' + lastErr); }
     }
   } catch (e) { p.msg = 'error: ' + e.message; }
   finally { chk = p; busy = false; persist(); aDraw(); }
@@ -115,36 +191,39 @@ function autoClosed(o, h) {
 
 function aDraw() {
   if (!$('#aSt')) return;
-  const nAuto = S.pos.filter(o => o.auto).length;
-  $('#aSt').textContent = `${A.on ? 'กำลังทำงาน' : 'ปิดอยู่'} | เฝ้าดู ${watch.length} เหรียญ | ออเดอร์ที่เปิด ${S.pos.length}/${A.c.maxOpen} (ออโต้ ${nAuto}) | วันนี้ ${A.day.pnl.toFixed(2)} USDT${A.on && aBlocked() ? ' | หยุดทั้งวัน: ขาดทุนถึงเพดานแล้ว' : ''}`;
+  const mt = A.c.strat === 'mtf', nAuto = S.pos.filter(o => o.auto).length;
+  $('#aSt').textContent = `${A.on ? 'กำลังทำงาน' : 'ปิดอยู่'} | เฝ้าดู ${(mt ? mWatch : watch).length} เหรียญ | ออเดอร์ที่เปิด ${S.pos.length}/${A.c.maxOpen} (ออโต้ ${nAuto}) | วันนี้ ${A.day.pnl.toFixed(2)} USDT${A.on && aBlocked() ? ' | หยุดทั้งวัน: ขาดทุนถึงเพดานแล้ว' : ''}`;
   const g = f => { const a = A.stats.filter(f), n = a.length, W = a.filter(s => s.pnl > 0), Ls = a.filter(s => s.pnl <= 0), sum = b => b.reduce((s, x) => s + x.pnl, 0);
     return { n, w: W.length, wr: n ? W.length / n * 100 : 0, r: n ? a.reduce((s, x) => s + x.R, 0) / n : 0, pnl: sum(a), avg: n ? sum(a) / n : 0, aw: W.length ? sum(W) / W.length : 0, al: Ls.length ? sum(Ls) / Ls.length : 0 }; };
-  $('#aChk').textContent = chk ? `ตรวจ 5m ล่าสุด ${new Date(chk.t).toLocaleTimeString('th-TH')} | เฝ้า ${chk.w} เหรียญ | แท่งใหม่ที่ตรวจ ${chk.fresh} | เจอสัญญาณ ${chk.sig} | ${chk.msg}` : 'ยังไม่ได้ตรวจ (รอรอบแรกภายใน 30 วินาที หลังติ๊กเปิดออโต้)';
+  $('#aChk').textContent = chk ? `ตรวจล่าสุด ${new Date(chk.t).toLocaleTimeString('th-TH')} | เฝ้า ${chk.w} เหรียญ | แท่งใหม่ที่ตรวจ ${chk.fresh} | เจอสัญญาณ ${chk.sig} | ${chk.msg}` : 'ยังไม่ได้ตรวจ (รอรอบแรกภายใน 30 วินาที หลังติ๊กเปิดออโต้)';
   const rb = Object.entries(scanRej.by).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k} ${n}`).join(', ') || '-', rt = Object.entries(A.rej).sort((a, b) => b[1] - a[1]).map(([k, n]) => `${k}: ${n}`).join(' | ') || 'ยังไม่มีข้อมูล';
-  $('#aRej').innerHTML = `<div>สแกนล่าสุด: เหรียญในลิสต์ ${scanRej.n} → ผ่านตัวกรอง ${scanRej.ok} | ตัดเพราะ: ${rb}</div><div>ตอนเข้าออเดอร์ (สะสม นับเหรียญ+เหตุผลละครั้งต่อ 5 นาที): ${rt}</div>`;
-  $('#aTb tbody').innerHTML = [['ทะลุกรอบ', s => s.tag === 'BO'], ['ย่อในเทรนด์', s => s.tag === 'PB'], ['สวนเทรนด์', s => s.tag === 'CT'], ['คะแนน 2', s => s.s === 2], ['คะแนน 3', s => s.s === 3], ['คะแนน 4+', s => s.s >= 4],
+  $('#aRej').innerHTML = (mt ? `<div>หลาย TF: เหรียญสภาพคล่องจากสแกน ${lastOut.length} → อยู่ในโซน 15m ตามเทรนด์ 1h ${mWatch.length}${mPrepT ? ' (อัปเดต ' + new Date(mPrepT).toLocaleTimeString('th-TH') + ')' : ''}</div>` : `<div>สแกนล่าสุด: เหรียญในลิสต์ ${scanRej.n} → ผ่านตัวกรอง ${scanRej.ok} | ตัดเพราะ: ${rb}</div>`) + `<div>ตอนเข้าออเดอร์ (สะสม นับเหรียญ+เหตุผลละครั้งต่อ 5 นาที): ${rt}</div>`;
+  $('#aTb tbody').innerHTML = [['หลาย TF', s => s.tag === 'MT'], ['ทะลุกรอบ', s => s.tag === 'BO'], ['ย่อในเทรนด์', s => s.tag === 'PB'], ['สวนเทรนด์', s => s.tag === 'CT'], ['คะแนน 2', s => s.s === 2], ['คะแนน 3', s => s.s === 3], ['คะแนน 4+', s => s.s >= 4],
     ['ปิดที่ TP', s => s.why === 'TP'], ['SL หลังล็อกกำไร', s => s.why === 'SL' && !!s.be], ['SL ก่อนล็อก', s => s.why === 'SL' && !s.be], ['ปิดอื่นๆ (Liq/ปิดเอง/ถอน)', s => s.why !== 'TP' && s.why !== 'SL'], ['รวม', () => true]].map(([t, f]) => { const s = g(f);
     return `<tr><td>${t}</td><td>${s.w}/${s.n} ${s.wr.toFixed(0)}%</td><td>${s.r.toFixed(2)}</td><td class="${s.pnl >= 0 ? 'up' : 'dn'}">${s.pnl.toFixed(2)}</td><td class="${s.avg >= 0 ? 'up' : 'dn'}">${s.avg.toFixed(2)}</td><td class="up">${s.aw.toFixed(2)}</td><td class="dn">${s.al.toFixed(2)}</td></tr>`; }).join('');
   $('#aLog').innerHTML = logs.map(l => `<div>${l}</div>`).join('') || 'ยังไม่มีเหตุการณ์ (ควรมีไม้อย่างน้อย 30 ไม้ก่อนเชื่อสถิติ)';
 }
 
-const AF = [['margin', 'มาร์จิ้นต่อไม้ (USDT) [โหมดคงที่]'], ['lev', 'Leverage (x) [โหมดคงที่]'], ['slPct', 'Stop Loss (% ของราคาเข้า)'], ['tpPct', 'Take Profit (% ของราคาเข้า)'], ['risk', 'เสี่ยงต่อไม้ (% พอร์ต) [โหมดความเสี่ยง]'], ['maxOpen', 'ออเดอร์พร้อมกันสูงสุด'], ['dayLoss', 'หยุดทั้งวันเมื่อขาดทุน (% พอร์ต)'],
-  ['minScore', 'คะแนนต่ำสุดที่ยอมเข้า'], ['cool', 'พักเหรียญหลังโดน SL (นาที)'], ['rsiHi', 'ห้ามเข้า Long ถ้า RSI เกิน (0 = ปิด)'], ['rsiLo', 'ห้ามเข้า Short ถ้า RSI ต่ำกว่า (0 = ปิด)']];
+const AF = [['margin', 'มาร์จิ้นต่อไม้ (USDT) [โหมดคงที่]'], ['lev', 'Leverage (x) [โหมดคงที่]'], ['slPct', 'Stop Loss (% ของราคาเข้า) [กลยุทธ์เก่า]'], ['tpPct', 'Take Profit (% ของราคาเข้า) [กลยุทธ์เก่า]'], ['risk', 'เสี่ยงต่อไม้ (% พอร์ต) [โหมดความเสี่ยง]'], ['maxOpen', 'ออเดอร์พร้อมกันสูงสุด'], ['dayLoss', 'หยุดทั้งวันเมื่อขาดทุน (% พอร์ต)'],
+  ['minScore', 'คะแนนต่ำสุดที่ยอมเข้า [กลยุทธ์เก่า]'], ['cool', 'พักเหรียญหลังโดน SL (นาที)'], ['rsiHi', 'ห้ามเข้า Long ถ้า RSI เกิน (0 = ปิด) [กลยุทธ์เก่า]'], ['rsiLo', 'ห้ามเข้า Short ถ้า RSI ต่ำกว่า (0 = ปิด) [กลยุทธ์เก่า]']];
+const MF = [['rr', 'RR เป้า TP (เท่าของระยะ SL) [หลาย TF]'], ['slMin', 'SL ต่ำสุด (% ของราคาเข้า) [หลาย TF]'], ['slMax', 'SL กว้างสุด (%) เกินนี้ไม่เข้า [หลาย TF]'], ['feeMult', 'กำไรเป้าหมายต้องมากกว่าค่าธรรมเนียมรวมกี่เท่า [หลาย TF]'], ['mtAtr', 'ATR 15m ขั้นต่ำ (% ของราคา) [หลาย TF]'],
+  ['zoneAtr', 'ความกว้างโซน 15m (เท่าของ ATR 15m) [หลาย TF]'], ['mtVol', 'วอลุ่ม 1m ต้องพุ่งกี่เท่าของค่าเฉลี่ย [หลาย TF]'], ['spread', 'Spread สูงสุด (%) [หลาย TF]'], ['fundMax', 'ไม่เข้าถ้า Funding แออัดฝั่งเดียวกัน เกิน (%) [หลาย TF]']];
 const UF = [['beR', 'beUnit', 'เริ่มขยับ SL (เท่าทุน) เมื่อกำไรถึง'], ['trail', 'trailUnit', 'ระยะ SL ตามหลังราคาสูงสุด (0 = ไม่ตาม)']];
 const uOpt = u => `<select data-u="${u[1]}"><option value="R"${A.c[u[1]] !== 'pct' ? ' selected' : ''}>เท่าของ SL (R)</option><option value="pct"${A.c[u[1]] === 'pct' ? ' selected' : ''}>% ของราคาเข้า</option></select>`;
-$('#autoBox').innerHTML = `<label><input type="checkbox" id="aOn"> เปิดออโต้เทรดจำลอง (ต้องเปิดหน้านี้ทิ้งไว้ และใช้ TF ที่เลือกอยู่ในการสแกน)</label>
-  <div class="sr4"><label>โหมดไซซ์ต่อไม้<select data-a="mode"><option value="fixed">มาร์จิ้นคงที่ (USDT + Leverage)</option><option value="risk">คิดจากความเสี่ยง %</option></select></label>${AF.map(([k, t]) => `<label>${t}<input type="number" step="any" data-a="${k}" value="${A.c[k]}"></label>`).join('')}
+$('#autoBox').innerHTML = `<label><input type="checkbox" id="aOn"> เปิดออโต้เทรดจำลอง (ต้องเปิดหน้านี้ทิ้งไว้ ใช้รายชื่อเหรียญจากการสแกนของหน้านี้)</label>
+  <div class="sr4"><label>โหมดไซซ์ต่อไม้<select data-a="mode"><option value="fixed">มาร์จิ้นคงที่ (USDT + Leverage)</option><option value="risk">คิดจากความเสี่ยง %</option></select></label><label>กลยุทธ์เข้าออเดอร์<select data-a="strat"><option value="mtf">หลาย TF (1h/15m/5m/1m)</option><option value="old">เดิม (สแกน + 5m)</option></select></label>${AF.concat(MF).map(([k, t]) => `<label>${t}<input type="number" step="any" data-a="${k}" value="${A.c[k]}"></label>`).join('')}
   ${UF.map(([k, u, t]) => `<label>${t}<div class="sr2"><input type="number" step="any" data-a="${k}" value="${A.c[k]}">${uOpt([k, u])}</div></label>`).join('')}</div>
   <div id="aSt"></div><div id="aChk"></div><div id="aRej" style="font-size:12px;color:var(--mu);margin:6px 0"></div>
   <table id="aTb"><thead><tr><th>ป้าย</th><th>ชนะ/ทั้งหมด</th><th>เฉลี่ย R</th><th>PnL สุทธิ</th><th>เฉลี่ย/ไม้</th><th>ไม้ชนะเฉลี่ย</th><th>ไม้แพ้เฉลี่ย</th></tr></thead><tbody></tbody></table>
   <div id="aLog"></div><button id="aRst">ล้างสถิติออโต้</button>`;
-$('#autoBox select').value = A.c.mode;
+$('#autoBox [data-a="mode"]').value = A.c.mode;
+$('#autoBox [data-a="strat"]').value = A.c.strat;
 $('#aOn').onchange = e => { A.on = e.target.checked; aLog(A.on ? 'เปิดออโต้เทรดจำลอง' : 'ปิดออโต้เทรดจำลอง'); if (A.on) aLoop(); };
 $('#autoBox').addEventListener('change', e => {
   const k = e.target.dataset.a, u = e.target.dataset.u;
-  if (k === 'mode') { A.c.mode = e.target.value; persist(); }
+  if (k === 'mode' || k === 'strat') { A.c[k] = e.target.value; persist(); aDraw(); }
   else if (u) { A.c[u] = e.target.value; persist(); }
-  else if (k && (+e.target.value > 0 || (k === 'trail' && e.target.value !== '') || ((k === 'rsiHi' || k === 'rsiLo') && e.target.value !== '' && +e.target.value >= 0))) { A.c[k] = +e.target.value; persist(); aWatch(); }
+  else if (k && (+e.target.value > 0 || (k === 'trail' && e.target.value !== '') || ((k === 'rsiHi' || k === 'rsiLo') && e.target.value !== '' && +e.target.value >= 0))) { A.c[k] = +e.target.value; persist(); aWatch(); if (MF.some(m => m[0] === k)) mPrepT = 0; } // ปรับค่าหลาย TF แล้วคำนวณโซนใหม่รอบถัดไป
 });
 $('#aRst').onclick = () => { if (confirm('ล้างสถิติออโต้ทั้งหมด?')) { A.stats = []; A.cool = {}; A.rej = {}; persist(); aDraw(); } };
-setInterval(aLoop, 30000); setInterval(aTick, 5000); aDraw();
+setInterval(aLoop, 15000); setInterval(aTick, 5000); aDraw();
